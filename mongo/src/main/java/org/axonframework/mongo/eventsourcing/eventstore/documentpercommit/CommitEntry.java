@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2010-2016. Axon Framework
+ * Copyright (c) 2010-2018. Axon Framework
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,7 +16,7 @@
 
 package org.axonframework.mongo.eventsourcing.eventstore.documentpercommit;
 
-import org.axonframework.eventsourcing.DomainEventMessage;
+import org.axonframework.eventhandling.DomainEventMessage;
 import org.axonframework.mongo.eventsourcing.eventstore.documentperevent.EventEntry;
 import org.axonframework.mongo.eventsourcing.eventstore.documentperevent.EventEntryConfiguration;
 import org.axonframework.serialization.Serializer;
@@ -43,6 +43,7 @@ public class CommitEntry {
     private final String firstTimestamp;
     private final String lastTimestamp;
     private final EventEntry[] eventEntries;
+    private final String lastEventIdentifier;
 
     /**
      * Constructor used to create a new event entry to store in Mongo.
@@ -58,6 +59,7 @@ public class CommitEntry {
         lastTimestamp = formatInstant(lastEvent.getTimestamp());
         lastSequenceNumber = lastEvent.getSequenceNumber();
         aggregateIdentifier = lastEvent.getAggregateIdentifier();
+        lastEventIdentifier = lastEvent.getIdentifier();
         aggregateType = lastEvent.getType();
         eventEntries = new EventEntry[events.size()];
         for (int i = 0, eventsLength = events.size(); i < eventsLength; i++) {
@@ -85,6 +87,7 @@ public class CommitEntry {
         this.aggregateType = (String) dbObject.get(eventConfiguration.typeProperty());
         List<Document> entries = (List<Document>) dbObject.get(commitConfiguration.eventsProperty());
         eventEntries = new EventEntry[entries.size()];
+        this.lastEventIdentifier = (String) dbObject.get(eventConfiguration.eventIdentifierProperty());
         for (int i = 0, entriesSize = entries.size(); i < entriesSize; i++) {
             eventEntries[i] = new EventEntry(entries.get(i), eventConfiguration);
         }
@@ -114,6 +117,7 @@ public class CommitEntry {
         }
         return new Document(eventConfiguration.aggregateIdentifierProperty(), aggregateIdentifier)
                 .append(eventConfiguration.sequenceNumberProperty(), lastSequenceNumber)
+                .append(eventConfiguration.eventIdentifierProperty(), lastEventIdentifier)
                 .append(commitConfiguration.lastSequenceNumberProperty(), lastSequenceNumber)
                 .append(commitConfiguration.firstSequenceNumberProperty(), firstSequenceNumber)
                 .append(eventConfiguration.timestampProperty(), firstTimestamp)

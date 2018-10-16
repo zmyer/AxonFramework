@@ -20,6 +20,7 @@ import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.axonframework.common.Assert;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -31,6 +32,7 @@ import java.util.Map;
  * @param <K> the key type.
  * @param <V> the value type.
  * @author Nakul Mishra
+ * @since 3.3
  */
 public class DefaultConsumerFactory<K, V> implements ConsumerFactory<K, V> {
 
@@ -46,4 +48,13 @@ public class DefaultConsumerFactory<K, V> implements ConsumerFactory<K, V> {
         return new KafkaConsumer<>(this.configs);
     }
 
+    /**
+     * Return an unmodifiable reference to the configuration map for this factory.
+     * Useful for cloning to make a similar factory.
+     *
+     * @return the configs.
+     */
+    public Map<String, Object> configurationProperties() {
+        return Collections.unmodifiableMap(this.configs);
+    }
 }
