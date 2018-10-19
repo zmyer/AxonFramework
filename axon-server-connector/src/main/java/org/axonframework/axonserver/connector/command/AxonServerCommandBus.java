@@ -16,6 +16,7 @@
 
 package org.axonframework.axonserver.connector.command;
 
+import io.axoniq.axonserver.grpc.ErrorMessage;
 import io.axoniq.axonserver.grpc.command.*;
 import io.grpc.ClientInterceptor;
 import io.grpc.Status;
@@ -33,6 +34,7 @@ import org.axonframework.commandhandling.CommandBus;
 import org.axonframework.commandhandling.CommandCallback;
 import org.axonframework.commandhandling.CommandMessage;
 import org.axonframework.commandhandling.GenericCommandResultMessage;
+import org.axonframework.commandhandling.distributed.CommandDispatchException;
 import org.axonframework.commandhandling.distributed.RoutingStrategy;
 import org.axonframework.common.AxonThreadFactory;
 import org.axonframework.common.Registration;
@@ -46,6 +48,7 @@ import org.slf4j.LoggerFactory;
 import java.util.Comparator;
 import java.util.UUID;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.IntStream;
 
 import static org.axonframework.axonserver.connector.util.ProcessingInstructionHelper.priority;
@@ -99,9 +102,12 @@ public class AxonServerCommandBus implements CommandBus {
     }
 
     @Override
-    public <C, R> void dispatch(CommandMessage<C> commandMessage, CommandCallback<? super C, ? super R> commandCallback) {
+    public <C, R> void dispatch(CommandMessage<C> commandMessage,
+                                CommandCallback<? super C, ? super R> commandCallback) {
         logger.debug("Dispatch with callback: {}", commandMessage.getCommandName());
         CommandMessage<C> command = dispatchInterceptors.intercept(commandMessage);
+        AtomicBoolean serverResponded = new AtomicBoolean(false);
+        try {
             CommandServiceGrpc.newStub(axonServerConnectionManager.getChannel())
                               .withInterceptors(interceptors)
                               .dispatch(serializer.serialize(command,
@@ -110,7 +116,8 @@ public class AxonServerCommandBus implements CommandBus {
                                         new StreamObserver<CommandResponse>() {
                                             @Override
                                             public void onNext(CommandResponse commandResponse) {
-                                                if (!commandResponse.hasMessage()) {
+                                                serverResponded.set(true);
+                                                if (!commandResponse.hasErrorMessage()) {
                                                     logger.debug("response received - {}", commandResponse);
                                                     try {
                                                         //noinspection unchecked
@@ -125,23 +132,47 @@ public class AxonServerCommandBus implements CommandBus {
                                                     }
                                                 } else {
                                                     commandCallback.onResult(command, asCommandResultMessage(
-                                                                                      new RemoteCommandException(
-                                                                                              commandResponse
-                                                                                                      .getErrorCode(),
-                                                                                              commandResponse
-                                                                                                      .getMessage())));
+                                                            new AxonServerRemoteCommandHandlingException(
+                                                                    commandResponse
+                                                                            .getErrorCode(),
+                                                                    commandResponse
+                                                                            .getErrorMessage())));
                                                 }
                                             }
 
                                             @Override
                                             public void onError(Throwable throwable) {
-                                                commandCallback.onResult(command, asCommandResultMessage(throwable));
+                                                serverResponded.set(true);
+                                                commandCallback.onResult(command,
+                                                                         asCommandResultMessage(new AxonServerCommandDispatchException(
+                                                                                 ErrorCode.COMMAND_DISPATCH_ERROR
+                                                                                         .errorCode(),
+                                                                                 ExceptionSerializer
+                                                                                         .serialize(configuration
+                                                                                                            .getClientId(),
+                                                                                                    throwable))));
                                             }
 
                                             @Override
                                             public void onCompleted() {
+                                                if (!serverResponded.get()) {
+                                                    commandCallback.onResult(command,
+                                                                             asCommandResultMessage(new AxonServerCommandDispatchException(
+                                                                                     ErrorCode.COMMAND_DISPATCH_ERROR
+                                                                                             .errorCode(),
+                                                                                     ErrorMessage.newBuilder()
+                                                                                                 .setMessage("No result from command executor")
+                                                                                                 .build())));
+                                                }
                                             }
                                         });
+        } catch (Exception e) {
+            logger.warn("There was a problem dispatching a command {}.", command, e);
+            commandCallback.onResult(command,
+                                     asCommandResultMessage(new AxonServerCommandDispatchException(
+                                             ErrorCode.COMMAND_DISPATCH_ERROR.errorCode(),
+                                             ExceptionSerializer.serialize(configuration.getClientId(), e))));
+        }
     }
 
     @Override
@@ -157,6 +188,9 @@ public class AxonServerCommandBus implements CommandBus {
         return localSegment.registerHandlerInterceptor(handlerInterceptor);
     }
 
+    /**
+     * Disconnect the command bus from the Axon Server.
+     */
     public void disconnect() {
         commandRouterSubscriber.disconnect();
     }
@@ -205,7 +239,7 @@ public class AxonServerCommandBus implements CommandBus {
                         CommandSubscription.newBuilder()
                                 .setCommand(command)
                                 .setComponentName(configuration.getComponentName())
-                                .setClientName(configuration.getClientName())
+                                .setClientId(configuration.getClientId())
                                 .setMessageId(UUID.randomUUID().toString())
                                 .build()
                 ).build()));
@@ -222,13 +256,13 @@ public class AxonServerCommandBus implements CommandBus {
                 outboundStreamObserver.onNext(CommandProviderOutbound.newBuilder().setSubscribe(
                         CommandSubscription.newBuilder()
                                 .setCommand(command)
-                                .setClientName(configuration.getClientName())
+                                .setClientId(configuration.getClientId())
                                 .setComponentName(configuration.getComponentName())
                                 .setMessageId(UUID.randomUUID().toString())
                                 .build()
                 ).build());
             } catch (Exception sre) {
-                logger.warn("Subscribe at AxonServer platform failed - {}, trying again at later moment", sre.getMessage());
+                logger.debug("Subscribing command {} with AxonServer failed. Will resubscribe when connection is established.", command, sre);
             } finally {
                 subscribing = false;
             }
@@ -246,8 +280,8 @@ public class AxonServerCommandBus implements CommandBus {
                         CommandResponse.newBuilder()
                                        .setMessageIdentifier(UUID.randomUUID().toString())
                                        .setRequestIdentifier(command.getMessageIdentifier())
-                                       .setErrorCode(ErrorCode.resolve(throwable).errorCode())
-                                       .setMessage(ExceptionSerializer.serialize(configuration.getClientName(), throwable))
+                                       .setErrorCode(ErrorCode.COMMAND_DISPATCH_ERROR.errorCode())
+                                       .setErrorMessage(ExceptionSerializer.serialize(configuration.getClientId(), throwable))
                 ).build();
 
                 outboundStreamObserver.onNext(response);
@@ -256,7 +290,6 @@ public class AxonServerCommandBus implements CommandBus {
 
         private synchronized StreamObserver<CommandProviderOutbound> getSubscriberObserver() {
             if (subscriberStreamObserver == null) {
-                logger.info("Create new subscriber");
                 StreamObserver<CommandProviderInbound> commandsFromRoutingServer = new StreamObserver<CommandProviderInbound>() {
                     @Override
                     public void onNext(CommandProviderInbound commandToSubscriber) {
@@ -287,10 +320,11 @@ public class AxonServerCommandBus implements CommandBus {
                 };
 
                 StreamObserver<CommandProviderOutbound> stream = axonServerConnectionManager.getCommandStream(commandsFromRoutingServer, interceptors);
+                logger.info("Creating new subscriber");
                 subscriberStreamObserver = new FlowControllingStreamObserver<>(stream,
                         configuration,
                         flowControl -> CommandProviderOutbound.newBuilder().setFlowControl(flowControl).build(),
-                        t -> t.getRequestCase().equals(CommandProviderOutbound.RequestCase.COMMANDRESPONSE)).sendInitialPermits();
+                        t -> t.getRequestCase().equals(CommandProviderOutbound.RequestCase.COMMAND_RESPONSE)).sendInitialPermits();
 
             }
             return subscriberStreamObserver;
@@ -302,7 +336,7 @@ public class AxonServerCommandBus implements CommandBus {
                 getSubscriberObserver().onNext(CommandProviderOutbound.newBuilder().setUnsubscribe(
                         CommandSubscription.newBuilder()
                                 .setCommand(command)
-                                .setClientName(configuration.getClientName())
+                                .setClientId(configuration.getClientId())
                                 .setMessageId(UUID.randomUUID().toString())
                                 .build()
                 ).build());
@@ -316,7 +350,7 @@ public class AxonServerCommandBus implements CommandBus {
                     getSubscriberObserver().onNext(CommandProviderOutbound.newBuilder().setUnsubscribe(
                             CommandSubscription.newBuilder()
                                     .setCommand(command)
-                                    .setClientName(configuration.getClientName())
+                                    .setClientId(configuration.getClientId())
                                     .setMessageId(UUID.randomUUID().toString())
                                     .build()
                     ).build());
@@ -335,8 +369,8 @@ public class AxonServerCommandBus implements CommandBus {
                             CommandResponse.newBuilder()
                                            .setMessageIdentifier(UUID.randomUUID().toString())
                                            .setRequestIdentifier(command.getIdentifier())
-                                           .setErrorCode(ErrorCode.resolve(throwable).errorCode())
-                                           .setMessage(ExceptionSerializer.serialize(configuration.getClientName(), throwable))
+                                           .setErrorCode(ErrorCode.COMMAND_EXECUTION_ERROR.errorCode())
+                                           .setErrorMessage(ExceptionSerializer.serialize(configuration.getClientId(), throwable))
                     ).build();
 
                     responseObserver.onNext(response);
@@ -349,8 +383,9 @@ public class AxonServerCommandBus implements CommandBus {
         }
 
         public void disconnect() {
-            if( subscriberStreamObserver != null)
+            if( subscriberStreamObserver != null) {
                 subscriberStreamObserver.onCompleted();
+            }
             running = false;
             executor.shutdown();
         }

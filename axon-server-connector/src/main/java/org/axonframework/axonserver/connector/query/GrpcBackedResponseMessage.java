@@ -19,9 +19,7 @@ import io.axoniq.axonserver.grpc.query.QueryResponse;
 import org.axonframework.axonserver.connector.ErrorCode;
 import org.axonframework.axonserver.connector.util.GrpcMetadata;
 import org.axonframework.axonserver.connector.util.GrpcSerializedObject;
-import org.axonframework.common.AxonException;
 import org.axonframework.messaging.MetaData;
-import org.axonframework.queryhandling.QueryExecutionException;
 import org.axonframework.queryhandling.QueryResponseMessage;
 import org.axonframework.serialization.LazyDeserializingObject;
 import org.axonframework.serialization.Serializer;
@@ -47,15 +45,8 @@ public class GrpcBackedResponseMessage<R> implements QueryResponseMessage<R> {
         this.queryResponse = queryResponse;
         this.messageSerializer = messageSerializer;
         this.metadata = new GrpcMetadata(queryResponse.getMetaDataMap(), messageSerializer);
-        if (queryResponse.hasMessage()) {
-            Class<? extends AxonException> exceptionClass = ErrorCode.lookupExceptionClass(queryResponse
-                                                                                                   .getErrorCode());
-            Throwable remoteException = new RemoteQueryException(queryResponse.getErrorCode(),
-                                                                 queryResponse.getMessage());
-            if (QueryExecutionException.class.equals(exceptionClass)) {
-                remoteException = new QueryExecutionException(queryResponse.getMessage().getMessage(), remoteException);
-            }
-            this.exception = remoteException;
+        if (queryResponse.hasErrorMessage()) {
+            this.exception = ErrorCode.getFromCode(queryResponse.getErrorCode()).convert(queryResponse.getErrorMessage());
         } else {
             this.exception = null;
         }

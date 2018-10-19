@@ -21,6 +21,7 @@ import org.axonframework.messaging.MessageDispatchInterceptor;
 import org.axonframework.messaging.responsetypes.ResponseType;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -28,6 +29,7 @@ import java.util.stream.Stream;
 
 import static java.util.Arrays.asList;
 import static org.axonframework.common.BuilderUtils.assertNonNull;
+import static org.axonframework.queryhandling.GenericQueryResponseMessage.asResponseMessage;
 
 /**
  * Implementation of the QueryGateway interface that allows the registration of dispatchInterceptors.
@@ -74,13 +76,14 @@ public class DefaultQueryGateway implements QueryGateway {
         CompletableFuture<QueryResponseMessage<R>> queryResponse = queryBus
                 .query(processInterceptors(new GenericQueryMessage<>(query, queryName, responseType)));
         CompletableFuture<R> result = new CompletableFuture<>();
-        queryResponse.thenAccept(queryResponseMessage -> {
-            if (queryResponseMessage.isExceptional()) {
-                result.completeExceptionally(queryResponseMessage.exceptionResult());
-            } else {
-                result.complete(queryResponseMessage.getPayload());
-            }
-        });
+        queryResponse.exceptionally(cause -> asResponseMessage(responseType.responseMessagePayloadType(), cause))
+                     .thenAccept(queryResponseMessage -> {
+                         if (queryResponseMessage.isExceptional()) {
+                             result.completeExceptionally(queryResponseMessage.exceptionResult());
+                         } else {
+                             result.complete(queryResponseMessage.getPayload());
+                         }
+                     });
         return result;
     }
 
@@ -102,9 +105,15 @@ public class DefaultQueryGateway implements QueryGateway {
                 new GenericSubscriptionQueryMessage<>(query, queryName, initialResponseType, updateResponseType);
         SubscriptionQueryResult<QueryResponseMessage<I>, SubscriptionQueryUpdateMessage<U>> result = queryBus
                 .subscriptionQuery(processInterceptors(subscriptionQueryMessage), backpressure, updateBufferSize);
-        return new DefaultSubscriptionQueryResult<>(result.initialResult().map(QueryResponseMessage::getPayload),
-                                                    result.updates().map(SubscriptionQueryUpdateMessage::getPayload),
-                                                    result);
+        return new DefaultSubscriptionQueryResult<>(
+                result.initialResult()
+                      .filter(initialResult -> Objects.nonNull(initialResult.getPayload()))
+                      .map(QueryResponseMessage::getPayload),
+                result.updates()
+                      .filter(update -> Objects.nonNull(update.getPayload()))
+                      .map(SubscriptionQueryUpdateMessage::getPayload),
+                result
+        );
     }
 
     @Override

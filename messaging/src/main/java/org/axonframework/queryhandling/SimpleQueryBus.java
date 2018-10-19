@@ -140,34 +140,40 @@ public class SimpleQueryBus implements QueryBus {
         CompletableFuture<QueryResponseMessage<R>> result = new CompletableFuture<>();
         try {
             if (handlers.isEmpty()) {
-                throw new NoHandlerForQueryException(format("No handler found for %s with response type %s",
-                                                            interceptedQuery.getQueryName(),
-                                                            interceptedQuery.getResponseType()));
+                throw new NoHandlerForQueryException(
+                        format("No handler found for [%s] with response type [%s]",
+                               interceptedQuery.getQueryName(),
+                               interceptedQuery.getResponseType())
+                );
             }
             Iterator<MessageHandler<? super QueryMessage<?, ?>>> handlerIterator = handlers.iterator();
             boolean invocationSuccess = false;
             while (!invocationSuccess && handlerIterator.hasNext()) {
-                try {
-                    DefaultUnitOfWork<QueryMessage<Q, R>> uow = DefaultUnitOfWork.startAndGet(interceptedQuery);
-                    result = interceptAndInvoke(uow, handlerIterator.next());
+                DefaultUnitOfWork<QueryMessage<Q, R>> uow = DefaultUnitOfWork.startAndGet(interceptedQuery);
+                ResultMessage<CompletableFuture<QueryResponseMessage<R>>> resultMessage =
+                        interceptAndInvoke(uow, handlerIterator.next());
+                if (resultMessage.isExceptional()) {
+                    if (!(resultMessage.exceptionResult() instanceof NoHandlerForQueryException)) {
+                        result.complete(new GenericQueryResponseMessage<>(
+                                interceptedQuery.getResponseType().responseMessagePayloadType(),
+                                resultMessage.exceptionResult()));
+                        monitorCallback.reportFailure(resultMessage.exceptionResult());
+                        return result;
+                    }
+                } else {
+                    result = resultMessage.getPayload();
                     invocationSuccess = true;
-                } catch (NoHandlerForQueryException e) {
-                    // Ignore this Query Handler, as we may have another one which is suitable
-                } catch (Throwable e) {
-                    result.complete(new GenericQueryResponseMessage<>(interceptedQuery.getResponseType()
-                                                                                      .responseMessagePayloadType(),
-                                                                      e));
-                    monitorCallback.reportFailure(e);
-                    return result;
                 }
             }
             if (!invocationSuccess) {
-                throw new NoHandlerForQueryException(format("No suitable handler was found for %s with response type %s",
-                                                            interceptedQuery.getQueryName(),
-                                                            interceptedQuery.getResponseType()));
+                throw new NoHandlerForQueryException(
+                        format("No suitable handler was found for [%s] with response type [%s]",
+                               interceptedQuery.getQueryName(),
+                               interceptedQuery.getResponseType())
+                );
             }
             monitorCallback.reportSuccess();
-        } catch (Throwable e) {
+        } catch (Exception e) {
             result.completeExceptionally(e);
             monitorCallback.reportFailure(e);
         }
@@ -187,18 +193,24 @@ public class SimpleQueryBus implements QueryBus {
         long deadline = System.currentTimeMillis() + unit.toMillis(timeout);
         return handlers.stream()
                        .map(handler -> {
-                           try {
-                               long leftTimeout = getRemainingOfDeadline(deadline);
-                               QueryResponseMessage<R> response =
-                                       interceptAndInvoke(DefaultUnitOfWork.startAndGet(interceptedQuery), handler)
-                                               .get(leftTimeout, TimeUnit.MILLISECONDS);
-                               monitorCallback.reportSuccess();
-                               return response;
-                           } catch (Throwable e) {
-                               monitorCallback.reportFailure(e);
-                               errorHandler.onError(e, interceptedQuery, handler);
-                               return null;
+                           long leftTimeout = getRemainingOfDeadline(deadline);
+                           ResultMessage<CompletableFuture<QueryResponseMessage<R>>> resultMessage =
+                                   interceptAndInvoke(DefaultUnitOfWork.startAndGet(interceptedQuery),
+                                                      handler);
+                           QueryResponseMessage<R> response = null;
+                           if (resultMessage.isExceptional()) {
+                               monitorCallback.reportFailure(resultMessage.exceptionResult());
+                               errorHandler.onError(resultMessage.exceptionResult(), interceptedQuery, handler);
+                           } else {
+                               try {
+                                   response = resultMessage.getPayload().get(leftTimeout, TimeUnit.MILLISECONDS);
+                                   monitorCallback.reportSuccess();
+                               } catch (Exception e) {
+                                   monitorCallback.reportFailure(e);
+                                   errorHandler.onError(e, interceptedQuery, handler);
+                               }
                            }
+                           return response;
                        }).filter(Objects::nonNull);
     }
 
@@ -246,10 +258,10 @@ public class SimpleQueryBus implements QueryBus {
     }
 
     @SuppressWarnings("unchecked")
-    private <Q, R> CompletableFuture<QueryResponseMessage<R>> interceptAndInvoke(UnitOfWork<QueryMessage<Q, R>> uow,
-                                                                                 MessageHandler<? super QueryMessage<?, R>> handler)
-            throws Throwable {
-        ResultMessage<CompletableFuture> completableFutureResultMessage = uow.executeWithResult(() -> {
+    private <Q, R> ResultMessage<CompletableFuture<QueryResponseMessage<R>>> interceptAndInvoke(
+            UnitOfWork<QueryMessage<Q, R>> uow,
+            MessageHandler<? super QueryMessage<?, R>> handler) {
+        return uow.executeWithResult(() -> {
             ResponseType<R> responseType = uow.getMessage().getResponseType();
             Object queryResponse = new DefaultInterceptorChain<>(uow, handlerInterceptors, handler).proceed();
             if (queryResponse instanceof CompletableFuture) {
@@ -258,7 +270,7 @@ public class SimpleQueryBus implements QueryBus {
             } else if (queryResponse instanceof Future) {
                 return CompletableFuture.supplyAsync(() -> {
                     try {
-                        return ((Future) queryResponse).get();
+                        return ((Future<QueryResponseMessage<R>>) queryResponse).get();
                     } catch (InterruptedException | ExecutionException e) {
                         throw new QueryExecutionException("Error happened while trying to execute query handler", e);
                     }
@@ -266,11 +278,6 @@ public class SimpleQueryBus implements QueryBus {
             }
             return buildCompletableFuture(responseType, queryResponse);
         });
-        if (completableFutureResultMessage.isExceptional()) {
-            throw completableFutureResultMessage.exceptionResult();
-        } else {
-            return completableFutureResultMessage.getPayload();
-        }
     }
 
     private <R> CompletableFuture<QueryResponseMessage<R>> buildCompletableFuture(ResponseType<R> responseType,
