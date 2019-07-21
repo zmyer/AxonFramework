@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2010-2018. Axon Framework
+ * Copyright (c) 2010-2019. Axon Framework
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,12 +20,12 @@ import org.axonframework.commandhandling.CommandBus;
 import org.axonframework.common.AxonConfigurationException;
 import org.axonframework.common.transaction.TransactionManager;
 import org.axonframework.eventhandling.EventBus;
-import org.axonframework.modelling.saga.ResourceInjector;
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine;
 import org.axonframework.eventsourcing.eventstore.EventStore;
 import org.axonframework.messaging.Message;
 import org.axonframework.messaging.annotation.HandlerDefinition;
 import org.axonframework.messaging.correlation.CorrelationDataProvider;
+import org.axonframework.modelling.saga.ResourceInjector;
 import org.axonframework.monitoring.MessageMonitor;
 import org.axonframework.queryhandling.QueryBus;
 import org.axonframework.queryhandling.QueryUpdateEmitter;
@@ -392,6 +392,17 @@ public interface Configurer {
     }
 
     /**
+     * Configures the given Tags Configuration to use in this configuration. The builder receives the Configuration as
+     * input and is expected to return a fully initialized {@link TagsConfiguration} instance.
+     *
+     * @param tagsBuilder The builder function for the {@link TagsConfiguration}
+     * @return the current instance of the Configurer, for chaining purposes
+     */
+    default Configurer configureTags(Function<Configuration, TagsConfiguration> tagsBuilder) {
+        return registerComponent(TagsConfiguration.class, tagsBuilder);
+    }
+
+    /**
      * Configures an Aggregate in this configuration based on the given {@code aggregateConfiguration}. This method
      * allows for more fine-grained configuration compared to the {@link #configureAggregate(Class)} method.
      *
@@ -425,7 +436,7 @@ public interface Configurer {
     Configurer registerHandlerDefinition(BiFunction<Configuration, Class, HandlerDefinition> handlerDefinitionClass);
 
     /**
-     * Retrievee the {@link EventProcessingConfigurer} registered as a module with this Configurer. If there aren't
+     * Retrieve the {@link EventProcessingConfigurer} registered as a module with this Configurer. If there aren't
      * any, it will create an {@link EventProcessingModule} and register it as a module. If there are multiple,
      * an {@link AxonConfigurationException} is thrown.
      *
@@ -451,6 +462,17 @@ public interface Configurer {
      */
     default Configurer eventProcessing(Consumer<EventProcessingConfigurer> eventProcessingConfigurer) throws AxonConfigurationException {
         eventProcessingConfigurer.accept(eventProcessing());
+        return this;
+    }
+
+    /**
+     * Registers a {@link Function} that builds an Event Handler instance.
+     *
+     * @param eventHandlerBuilder a {@link Function} that builds an Event Handler instance.
+     * @return the current instance of the Configurer, for chaining purposes.
+     */
+    default Configurer registerEventHandler(Function<Configuration, Object> eventHandlerBuilder) {
+        eventProcessing().registerEventHandler(eventHandlerBuilder);
         return this;
     }
 

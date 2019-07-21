@@ -19,9 +19,11 @@ package org.axonframework.eventsourcing.eventstore.jdbc;
 import org.axonframework.common.jdbc.PersistenceExceptionResolver;
 import org.axonframework.common.transaction.NoTransactionManager;
 import org.axonframework.eventhandling.DomainEventData;
+import org.axonframework.eventhandling.DomainEventMessage;
 import org.axonframework.eventhandling.GapAwareTrackingToken;
 import org.axonframework.eventhandling.GenericEventMessage;
 import org.axonframework.eventhandling.TrackedEventData;
+import org.axonframework.eventhandling.TrackedEventMessage;
 import org.axonframework.eventhandling.TrackingEventStream;
 import org.axonframework.eventsourcing.eventstore.AbstractEventStorageEngine;
 import org.axonframework.eventsourcing.eventstore.BatchingEventStorageEngineTest;
@@ -45,11 +47,11 @@ import java.util.UUID;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
+import java.util.stream.Stream;
 
 import static java.util.stream.Collectors.toList;
 import static junit.framework.TestCase.assertEquals;
-import static org.axonframework.eventsourcing.utils.EventStoreTestUtils.AGGREGATE;
-import static org.axonframework.eventsourcing.utils.EventStoreTestUtils.createEvent;
+import static org.axonframework.eventsourcing.utils.EventStoreTestUtils.*;
 import static org.junit.Assert.*;
 
 /**
@@ -160,7 +162,6 @@ public class JdbcEventStorageEngineTest extends BatchingEventStorageEngineTest {
     public void testEventsWithUnknownPayloadTypeDoNotResultInError() throws SQLException, InterruptedException {
         String expectedPayloadOne = "Payload3";
         String expectedPayloadTwo = "Payload4";
-        List<String> expected = Arrays.asList(expectedPayloadOne, expectedPayloadTwo);
 
         int testBatchSize = 2;
         testSubject = createEngine(defaultPersistenceExceptionResolver, new EventSchema(), testBatchSize);
@@ -180,7 +181,7 @@ public class JdbcEventStorageEngineTest extends BatchingEventStorageEngineTest {
                                                            .filter(m -> m.getPayload() instanceof String)
                                                            .map(m -> (String) m.getPayload())
                                                            .collect(toList());
-        assertEquals(expected, eventStorageEngineResult);
+        assertEquals(Arrays.asList(expectedPayloadOne, expectedPayloadTwo), eventStorageEngineResult);
 
         TrackingEventStream eventStoreResult = testEventStore.openStream(null);
         assertTrue(eventStoreResult.hasNextAvailable());
@@ -190,6 +191,67 @@ public class JdbcEventStorageEngineTest extends BatchingEventStorageEngineTest {
         assertEquals(expectedPayloadTwo, eventStoreResult.nextAvailable().getPayload());
     }
 
+    @Test
+    public void testStreamCrossesConsecutiveGapsOfMoreThanBatchSuccessfully() throws SQLException {
+        testSubject = createEngine(defaultPersistenceExceptionResolver, new EventSchema(), 10);
+        testSubject.appendEvents(createEvents(100));
+
+        try (Connection conn = dataSource.getConnection()) {
+            conn.prepareStatement("DELETE FROM DomainEventEntry WHERE globalIndex >= 20 and globalIndex < 40")
+                .executeUpdate();
+        }
+
+        Stream<? extends TrackedEventMessage<?>> actual = testSubject.readEvents(null, false);
+        List<? extends TrackedEventMessage<?>> actualEvents = actual.collect(toList());
+        assertEquals(80, actualEvents.size());
+    }
+
+    @Test
+    public void testStreamDoesNotCrossExtendedGapWhenDisabled() throws SQLException {
+        testSubject = JdbcEventStorageEngine.builder().upcasterChain(NoOpEventUpcaster.INSTANCE)
+                                            .batchSize(10)
+                                            .connectionProvider(dataSource::getConnection)
+                                            .transactionManager(NoTransactionManager.INSTANCE)
+                                            .schema(new EventSchema())
+                                            .dataType(byte[].class)
+                                            .extendedGapCheckEnabled(false)
+                                            .build();
+
+        try {
+            Connection connection = dataSource.getConnection();
+            connection.prepareStatement("DROP TABLE IF EXISTS DomainEventEntry").executeUpdate();
+            connection.prepareStatement("DROP TABLE IF EXISTS SnapshotEventEntry").executeUpdate();
+            testSubject.createSchema(HsqlEventTableFactory.INSTANCE);
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+
+        testSubject.appendEvents(createEvents(100));
+
+        try (Connection conn = dataSource.getConnection()) {
+            conn.prepareStatement("DELETE FROM DomainEventEntry WHERE globalIndex >= 20 and globalIndex < 40")
+                .executeUpdate();
+        }
+
+        Stream<? extends TrackedEventMessage<?>> actual = testSubject.readEvents(null, false);
+        List<? extends TrackedEventMessage<?>> actualEvents = actual.collect(toList());
+        assertEquals(20, actualEvents.size());
+    }
+
+    @Test
+    public void testStreamCrossesInitialConsecutiveGapsOfMoreThanBatchSuccessfully() throws SQLException {
+        testSubject = createEngine(defaultPersistenceExceptionResolver, new EventSchema(), 10);
+        testSubject.appendEvents(createEvents(100));
+
+        try (Connection conn = dataSource.getConnection()) {
+            conn.prepareStatement("DELETE FROM DomainEventEntry WHERE globalIndex < 20")
+                .executeUpdate();
+        }
+
+        Stream<? extends TrackedEventMessage<?>> actual = testSubject.readEvents(null, false);
+        List<? extends TrackedEventMessage<?>> actualEvents = actual.collect(toList());
+        assertEquals(80, actualEvents.size());
+    }
 
     @Test
     public void testLoadSnapshotIfMatchesPredicate() {
@@ -209,6 +271,118 @@ public class JdbcEventStorageEngineTest extends BatchingEventStorageEngineTest {
 
         testSubject.storeSnapshot(createEvent(1));
         assertFalse(testSubject.readSnapshot(AGGREGATE).isPresent());
+    }
+
+    @Test
+    public void testReadEventsForAggregateReturnsTheCompleteStream() {
+        testSubject = createEngine(defaultPersistenceExceptionResolver, new EventSchema(), 10);
+
+        DomainEventMessage<String> testEventOne = createEvent(0);
+        DomainEventMessage<String> testEventTwo = createEvent(1);
+        DomainEventMessage<String> testEventThree = createEvent(2);
+        DomainEventMessage<String> testEventFour = createEvent(3);
+        DomainEventMessage<String> testEventFive = createEvent(4);
+
+        testSubject.appendEvents(testEventOne, testEventTwo, testEventThree, testEventFour, testEventFive);
+
+        List<? extends DomainEventMessage<?>> result = testSubject.readEvents(AGGREGATE, 0L).asStream()
+                                                                  .collect(toList());
+
+        assertEquals(5, result.size());
+        assertEquals(0, result.get(0).getSequenceNumber());
+        assertEquals(1, result.get(1).getSequenceNumber());
+        assertEquals(2, result.get(2).getSequenceNumber());
+        assertEquals(3, result.get(3).getSequenceNumber());
+        assertEquals(4, result.get(4).getSequenceNumber());
+    }
+
+    @Test
+    public void testReadEventsForAggregateWithGapsReturnsTheCompleteStream() {
+        testSubject = createEngine(defaultPersistenceExceptionResolver, new EventSchema(), 10);
+
+        DomainEventMessage<String> testEventOne = createEvent(0);
+        DomainEventMessage<String> testEventTwo = createEvent(1);
+        // Event with sequence number 2 is missing -> the gap
+        DomainEventMessage<String> testEventFour = createEvent(3);
+        DomainEventMessage<String> testEventFive = createEvent(4);
+
+        testSubject.appendEvents(testEventOne, testEventTwo, testEventFour, testEventFive);
+
+        List<? extends DomainEventMessage<?>> result = testSubject.readEvents(AGGREGATE, 0L).asStream()
+                                                                  .collect(toList());
+
+        assertEquals(4, result.size());
+        assertEquals(0, result.get(0).getSequenceNumber());
+        assertEquals(1, result.get(1).getSequenceNumber());
+        assertEquals(3, result.get(2).getSequenceNumber());
+        assertEquals(4, result.get(3).getSequenceNumber());
+    }
+
+    @Test
+    public void testReadEventsForAggregateWithEventsExceedingOneBatchReturnsTheCompleteStream() {
+        // Set batch size to 5, so that the number of events exceeds at least one batch
+        int batchSize = 5;
+        testSubject = createEngine(defaultPersistenceExceptionResolver, new EventSchema(), batchSize);
+
+        DomainEventMessage<String> testEventOne = createEvent(0);
+        DomainEventMessage<String> testEventTwo = createEvent(1);
+        DomainEventMessage<String> testEventThree = createEvent(2);
+        DomainEventMessage<String> testEventFour = createEvent(3);
+        DomainEventMessage<String> testEventFive = createEvent(4);
+        DomainEventMessage<String> testEventSix = createEvent(5);
+        DomainEventMessage<String> testEventSeven = createEvent(6);
+        DomainEventMessage<String> testEventEight = createEvent(7);
+
+        testSubject.appendEvents(
+                testEventOne, testEventTwo, testEventThree, testEventFour, testEventFive, testEventSix, testEventSeven,
+                testEventEight
+        );
+
+        List<? extends DomainEventMessage<?>> result = testSubject.readEvents(AGGREGATE, 0L).asStream()
+                                                                  .collect(toList());
+
+        assertEquals(8, result.size());
+        assertEquals(0, result.get(0).getSequenceNumber());
+        assertEquals(1, result.get(1).getSequenceNumber());
+        assertEquals(2, result.get(2).getSequenceNumber());
+        assertEquals(3, result.get(3).getSequenceNumber());
+        assertEquals(4, result.get(4).getSequenceNumber());
+        assertEquals(5, result.get(5).getSequenceNumber());
+        assertEquals(6, result.get(6).getSequenceNumber());
+        assertEquals(7, result.get(7).getSequenceNumber());
+    }
+
+    @Test
+    public void testReadEventsForAggregateWithEventsExceedingOneBatchAndGapsReturnsTheCompleteStream() {
+        // Set batch size to 5, so that the number of events exceeds at least one batch
+        int batchSize = 5;
+        testSubject = createEngine(defaultPersistenceExceptionResolver, new EventSchema(), batchSize);
+
+        DomainEventMessage<String> testEventOne = createEvent(0);
+        DomainEventMessage<String> testEventTwo = createEvent(1);
+        // Event with sequence number 2 is missing -> the gap
+        DomainEventMessage<String> testEventFour = createEvent(3);
+        DomainEventMessage<String> testEventFive = createEvent(4);
+        DomainEventMessage<String> testEventSix = createEvent(5);
+        DomainEventMessage<String> testEventSeven = createEvent(6);
+        DomainEventMessage<String> testEventEight = createEvent(7);
+
+        testSubject.appendEvents(
+                testEventOne, testEventTwo, testEventFour, testEventFive, testEventSix, testEventSeven,
+                testEventEight
+        );
+
+        List<? extends DomainEventMessage<?>> result = testSubject.readEvents(AGGREGATE, 0L).asStream()
+                                                                  .collect(toList());
+
+        assertEquals(7, result.size());
+        assertEquals(0, result.get(0).getSequenceNumber());
+        assertEquals(1, result.get(1).getSequenceNumber());
+        assertEquals(3, result.get(2).getSequenceNumber());
+        assertEquals(4, result.get(3).getSequenceNumber());
+        assertEquals(5, result.get(4).getSequenceNumber());
+        assertEquals(6, result.get(5).getSequenceNumber());
+        assertEquals(7, result.get(6).getSequenceNumber());
     }
 
     @Override

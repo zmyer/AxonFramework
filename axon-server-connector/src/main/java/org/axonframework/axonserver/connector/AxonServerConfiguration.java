@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2018. Axon Framework
+ * Copyright (c) 2010-2019. Axon Framework
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,12 +27,17 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 /**
- * Author: marc
+ * Configuration class provided configurable fields and defaults for anything Axon Server related.
+ *
+ * @author Marc Gathier
+ * @since 4.0
  */
 @ConfigurationProperties(prefix = "axon.axonserver")
 public class AxonServerConfiguration {
+
     private static final int DEFAULT_GRPC_PORT = 8124;
     private static final String DEFAULT_SERVERS = "localhost";
+    private static final String DEFAULT_CONTEXT = "default";
 
     /**
      * Comma separated list of AxonDB servers. Each element is hostname or hostname:grpcPort. When no grpcPort is
@@ -44,6 +49,7 @@ public class AxonServerConfiguration {
      * clientId as it registers itself to AxonServer, must be unique
      */
     private String clientId = ManagementFactory.getRuntimeMXBean().getName();
+
     /**
      * application name, defaults to spring.application.name
      * multiple instances of the same application share the same application name, but each must have
@@ -57,13 +63,15 @@ public class AxonServerConfiguration {
     private String token;
 
     /**
-     * Bounded context that this application operates in
+     * Bounded context that this application operates in. Defaults to {@code "default"}.
      */
-    private String context;
+    private String context = DEFAULT_CONTEXT;
+
     /**
      * Certificate file for SSL
      */
     private String certFile;
+
     /**
      * Use TLS for connection to AxonServer
      */
@@ -72,21 +80,29 @@ public class AxonServerConfiguration {
     /**
      * Initial number of permits send for message streams (events, commands, queries)
      */
-    private Integer initialNrOfPermits = 1000;
+    private Integer initialNrOfPermits = 5000;
+
     /**
      * Additional number of permits send for message streams (events, commands, queries) when application
-     * is ready for more messages
+     * is ready for more messages.
+     * <p>
+     * A value of {@code null}, 0, and negative values will have the client request the number of permits
+     * required to get from the "new-permits-threshold" to "initial-nr-of-permits".
      */
-    private Integer nrOfNewPermits = 500;
+    private Integer nrOfNewPermits = null;
+
     /**
      * Threshold at which application sends new permits to server
+     * <p>
+     * A value of {@code null}, 0, and negative values will have the threshold set to 50% of "initial-nr-of-permits".
      */
-    private Integer newPermitsThreshold = 500;
+    private Integer newPermitsThreshold = null;
 
     /**
      * Number of threads executing commands
      */
     private int commandThreads = 10;
+
     /**
      * Number of threads executing queries
      */
@@ -102,6 +118,10 @@ public class AxonServerConfiguration {
      */
     private int processorsNotificationInitialDelay = 5000;
 
+    /**
+     * An {@link EventCipher} which is used to encrypt and decrypt events and snapshots. Defaults to
+     * {@link EventCipher#EventCipher()}.
+     */
     private EventCipher eventCipher = new EventCipher();
 
     /**
@@ -110,9 +130,14 @@ public class AxonServerConfiguration {
     private long keepAliveTimeout = 5000;
 
     /**
-     * Interval (in ms) for keep alive requests, 0 is keep-alive disabled
+     * Interval (in ms) for keep alive requests, 0 is keep-alive disabled. Defaults to {@code 1000}.
      */
-    private long keepAliveTime = 0;
+    private long keepAliveTime = 1_000;
+
+    /**
+     * An {@code int} indicating the maximum number of Aggregate snapshots which will be retrieved. Defaults to
+     * {@code 1}.
+     */
     private int snapshotPrefetch = 1;
 
     /**
@@ -122,16 +147,48 @@ public class AxonServerConfiguration {
     private boolean suppressDownloadMessage = false;
 
     /**
-     *  GRPC max inbound message size, 0 keeps default value
+     * GRPC max inbound message size, 0 keeps default value
      */
     private int maxMessageSize = 0;
+    /**
+     * Timeout (in milliseconds) to wait for response on commit
+     */
+    private int commitTimeout = 10000;
 
+    /**
+     * The number of messages that may be in-transit on the network/grpc level when streaming data from the server.
+     * Setting this to 0 (or a negative value) will disable buffering, and requires each message sent by the server to
+     * be acknowledged before the next message may be sent. Defaults to 500.
+     */
+    private int maxGrpcBufferedMessages = 500;
+
+    /**
+     * Instantiate a default {@link AxonServerConfiguration}.
+     */
     public AxonServerConfiguration() {
     }
 
+    /**
+     * Instantiate a {@link Builder} to create an {@link AxonServerConfiguration}.
+     *
+     * @return a {@link Builder} to be able to create an {@link AxonServerConfiguration}.
+     */
+    public static Builder builder() {
+        Builder builder = new Builder();
+        if (Boolean.getBoolean("axon.axonserver.suppressDownloadMessage")) {
+            builder.suppressDownloadMessage();
+        }
+
+        return builder;
+    }
 
     public String getServers() {
         return servers;
+    }
+
+    public void setServers(String routingServers) {
+        this.servers = routingServers;
+        suppressDownloadMessage = true;
     }
 
     public String getClientId() {
@@ -143,16 +200,13 @@ public class AxonServerConfiguration {
     }
 
     public String getComponentName() {
-        return componentName == null ? System.getProperty("axon.application.name", "Unnamed-" + clientId) : componentName;
+        return componentName == null
+                ? System.getProperty("axon.application.name", "Unnamed-" + clientId)
+                : componentName;
     }
 
     public void setComponentName(String componentName) {
         this.componentName = componentName;
-    }
-
-    public void setServers(String routingServers) {
-        this.servers = routingServers;
-        suppressDownloadMessage = true;
     }
 
     public String getToken() {
@@ -188,6 +242,9 @@ public class AxonServerConfiguration {
     }
 
     public Integer getNrOfNewPermits() {
+        if (nrOfNewPermits == null || nrOfNewPermits <= 0) {
+            return getInitialNrOfPermits() - getNewPermitsThreshold();
+        }
         return nrOfNewPermits;
     }
 
@@ -196,6 +253,9 @@ public class AxonServerConfiguration {
     }
 
     public Integer getNewPermitsThreshold() {
+        if (newPermitsThreshold == null || newPermitsThreshold <= 0) {
+            return initialNrOfPermits / 2;
+        }
         return newPermitsThreshold;
     }
 
@@ -215,7 +275,7 @@ public class AxonServerConfiguration {
         String[] serverArr = servers.split(",");
         return Arrays.stream(serverArr).map(server -> {
             String[] s = server.trim().split(":");
-            if( s.length > 1) {
+            if (s.length > 1) {
                 return NodeInfo.newBuilder().setHostName(s[0]).setGrpcPort(Integer.valueOf(s[1])).build();
             }
             return NodeInfo.newBuilder().setHostName(s[0]).setGrpcPort(DEFAULT_GRPC_PORT).build();
@@ -227,7 +287,7 @@ public class AxonServerConfiguration {
     }
 
     private void setEventSecretKey(String key) {
-        if(key != null && key.length() > 0) {
+        if (key != null && key.length() > 0) {
             eventCipher = new EventCipher(key.getBytes(StandardCharsets.US_ASCII));
         }
     }
@@ -237,6 +297,10 @@ public class AxonServerConfiguration {
     }
 
     public void setCommandThreads(Integer commandThreads) {
+        this.commandThreads = commandThreads;
+    }
+
+    public void setCommandThreads(int commandThreads) {
         this.commandThreads = commandThreads;
     }
 
@@ -272,10 +336,6 @@ public class AxonServerConfiguration {
         this.keepAliveTimeout = keepAliveTimeout;
     }
 
-    public void setCommandThreads(int commandThreads) {
-        this.commandThreads = commandThreads;
-    }
-
     public long getKeepAliveTime() {
         return keepAliveTime;
     }
@@ -284,12 +344,12 @@ public class AxonServerConfiguration {
         this.keepAliveTime = keepAliveTime;
     }
 
-    public void setSuppressDownloadMessage(boolean suppressDownloadMessage) {
-        this.suppressDownloadMessage = suppressDownloadMessage;
-    }
-
     public boolean getSuppressDownloadMessage() {
         return suppressDownloadMessage;
+    }
+
+    public void setSuppressDownloadMessage(boolean suppressDownloadMessage) {
+        this.suppressDownloadMessage = suppressDownloadMessage;
     }
 
     public int getMaxMessageSize() {
@@ -308,8 +368,25 @@ public class AxonServerConfiguration {
         this.snapshotPrefetch = snapshotPrefetch;
     }
 
+    public int getCommitTimeout() {
+        return commitTimeout;
+    }
+
+    public void setCommitTimeout(int commitTimeout) {
+        this.commitTimeout = commitTimeout;
+    }
+
+    public int getMaxGrpcBufferedMessages() {
+        return maxGrpcBufferedMessages;
+    }
+
+    public void setMaxGrpcBufferedMessages(int maxGrpcBufferedMessages) {
+        this.maxGrpcBufferedMessages = maxGrpcBufferedMessages;
+    }
+
     @SuppressWarnings("unused")
     public static class Builder {
+
         private AxonServerConfiguration instance;
 
         public Builder() {
@@ -362,6 +439,11 @@ public class AxonServerConfiguration {
             return this;
         }
 
+        /**
+         * Initializes a {@link AxonServerConfiguration} as specified through this Builder.
+         *
+         * @return a {@link AxonServerConfiguration} as specified through this Builder
+         */
         public AxonServerConfiguration build() {
             return instance;
         }
@@ -385,14 +467,5 @@ public class AxonServerConfiguration {
             instance.setClientId(clientId);
             return this;
         }
-    }
-
-    public static Builder builder() {
-        Builder builder = new Builder();
-        if (Boolean.getBoolean("axon.axonserver.suppressDownloadMessage")) {
-            builder.suppressDownloadMessage();
-        }
-
-        return builder;
     }
 }

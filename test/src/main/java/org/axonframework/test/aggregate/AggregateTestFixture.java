@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -31,6 +31,7 @@ import org.axonframework.eventhandling.DomainEventMessage;
 import org.axonframework.eventhandling.EventBus;
 import org.axonframework.eventhandling.EventMessage;
 import org.axonframework.eventhandling.GenericDomainEventMessage;
+import org.axonframework.eventhandling.GenericEventMessage;
 import org.axonframework.eventhandling.TrackingEventStream;
 import org.axonframework.eventhandling.TrackingToken;
 import org.axonframework.eventsourcing.AggregateFactory;
@@ -40,6 +41,7 @@ import org.axonframework.eventsourcing.GenericAggregateFactory;
 import org.axonframework.eventsourcing.eventstore.DomainEventStream;
 import org.axonframework.eventsourcing.eventstore.EventStore;
 import org.axonframework.eventsourcing.eventstore.EventStoreException;
+import org.axonframework.messaging.GenericMessage;
 import org.axonframework.messaging.Message;
 import org.axonframework.messaging.MessageDispatchInterceptor;
 import org.axonframework.messaging.MessageHandler;
@@ -58,6 +60,7 @@ import org.axonframework.modelling.command.Aggregate;
 import org.axonframework.modelling.command.AggregateAnnotationCommandHandler;
 import org.axonframework.modelling.command.AggregateNotFoundException;
 import org.axonframework.modelling.command.AggregateScopeDescriptor;
+import org.axonframework.modelling.command.CommandTargetResolver;
 import org.axonframework.modelling.command.ConflictingAggregateVersionException;
 import org.axonframework.modelling.command.Repository;
 import org.axonframework.modelling.command.RepositoryProvider;
@@ -75,8 +78,10 @@ import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -125,6 +130,7 @@ public class AggregateTestFixture<T> implements FixtureConfiguration<T>, TestExe
     private boolean explicitCommandHandlersSet;
     private MultiParameterResolverFactory parameterResolverFactory;
     private HandlerDefinition handlerDefinition;
+    private CommandTargetResolver commandTargetResolver;
 
     /**
      * Initializes a new given-when-then style test fixture for the given {@code aggregateType}.
@@ -259,6 +265,12 @@ public class AggregateTestFixture<T> implements FixtureConfiguration<T>, TestExe
     }
 
     @Override
+    public FixtureConfiguration<T> registerCommandTargetResolver(CommandTargetResolver commandTargetResolver) {
+        this.commandTargetResolver = commandTargetResolver;
+        return this;
+    }
+
+    @Override
     public TestExecutor<T> given(Object... domainEvents) {
         return given(Arrays.asList(domainEvents));
     }
@@ -307,8 +319,14 @@ public class AggregateTestFixture<T> implements FixtureConfiguration<T>, TestExe
                 payload = ((Message) event).getPayload();
                 metaData = ((Message) event).getMetaData();
             }
-            this.givenEvents.add(new GenericDomainEventMessage<>(aggregateType.getSimpleName(), aggregateIdentifier,
-                                                                 sequenceNumber++, payload, metaData));
+            GenericDomainEventMessage<Object> eventMessage = new GenericDomainEventMessage<>(
+                    aggregateType.getSimpleName(),
+                    aggregateIdentifier,
+                    sequenceNumber++,
+                    new GenericMessage<>(payload, metaData),
+                    deadlineManager.getCurrentDateTime()
+            );
+            this.givenEvents.add(eventMessage);
         }
         return this;
     }
@@ -334,13 +352,29 @@ public class AggregateTestFixture<T> implements FixtureConfiguration<T>, TestExe
         finalizeConfiguration();
         for (Object command : commands) {
             ExecutionExceptionAwareCallback callback = new ExecutionExceptionAwareCallback();
-            commandBus.dispatch(GenericCommandMessage.asCommandMessage(command), callback);
+            CommandMessage<Object> commandMessage = GenericCommandMessage.asCommandMessage(command);
+            executeAtSimulatedTime(() -> commandBus.dispatch(commandMessage, callback));
             callback.assertSuccessful();
             givenEvents.addAll(storedEvents);
             storedEvents.clear();
         }
         publishedEvents.clear();
         return this;
+    }
+
+    private void executeAtSimulatedTime(Runnable runnable) {
+        Clock previousClock = GenericEventMessage.clock;
+        try {
+            GenericEventMessage.clock = Clock.fixed(currentTime(), ZoneOffset.UTC);
+            runnable.run();
+        } finally {
+            GenericEventMessage.clock = previousClock;
+        }
+    }
+
+    @Override
+    public TestExecutor<T> givenCurrentTime(Instant currentTime) {
+        return andGivenCurrentTime(currentTime);
     }
 
     @Override
@@ -355,14 +389,14 @@ public class AggregateTestFixture<T> implements FixtureConfiguration<T>, TestExe
     }
 
     @Override
-    public ResultValidator andThenTimeElapses(Duration elapsedTime) {
+    public ResultValidator whenThenTimeElapses(Duration elapsedTime) {
         deadlineManager.advanceTimeBy(elapsedTime, this::handleDeadline);
         return buildResultValidator();
     }
 
     @Override
-    public ResultValidator andThenTimeAdvancesTo(Instant newDateTime) {
-        deadlineManager.advanceTimeTo(newDateTime, this::handleDeadline);
+    public ResultValidator whenThenTimeAdvancesTo(Instant newPointInTime) {
+        deadlineManager.advanceTimeTo(newPointInTime, this::handleDeadline);
         return buildResultValidator();
     }
 
@@ -380,7 +414,8 @@ public class AggregateTestFixture<T> implements FixtureConfiguration<T>, TestExe
                                                                            () -> repository.getAggregate(),
                                                                            deadlineManager);
 
-        commandBus.dispatch(GenericCommandMessage.asCommandMessage(command).andMetaData(metaData), resultValidator);
+        CommandMessage<Object> commandMessage = GenericCommandMessage.asCommandMessage(command).andMetaData(metaData);
+        executeAtSimulatedTime(() -> commandBus.dispatch(commandMessage, resultValidator));
 
         if (!repository.rolledBack) {
             Aggregate<T> workingAggregate = repository.aggregate;
@@ -442,12 +477,16 @@ public class AggregateTestFixture<T> implements FixtureConfiguration<T>, TestExe
     private void registerAggregateCommandHandlers() {
         ensureRepositoryConfiguration();
         if (!explicitCommandHandlersSet) {
-            AggregateAnnotationCommandHandler<T> handler =
-                    AggregateAnnotationCommandHandler.<T>builder()
-                            .aggregateType(aggregateType)
-                            .parameterResolverFactory(parameterResolverFactory)
-                            .repository(repository)
-                            .build();
+            AggregateAnnotationCommandHandler.Builder<T> builder = AggregateAnnotationCommandHandler.<T>builder()
+                    .aggregateType(aggregateType)
+                    .parameterResolverFactory(parameterResolverFactory)
+                    .repository(this.repository);
+
+            if (commandTargetResolver != null) {
+                builder.commandTargetResolver(commandTargetResolver);
+            }
+
+            AggregateAnnotationCommandHandler<T> handler = builder.build();
             handler.subscribe(commandBus);
         }
     }

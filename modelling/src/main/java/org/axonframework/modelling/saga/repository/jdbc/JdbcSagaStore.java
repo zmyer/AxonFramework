@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2010-2018. Axon Framework
+ * Copyright (c) 2010-2019. Axon Framework
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -31,6 +31,7 @@ import org.axonframework.serialization.xml.XStreamSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.sql.DataSource;
 import java.nio.charset.Charset;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -38,7 +39,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Set;
 import java.util.TreeSet;
-import javax.sql.DataSource;
+import java.util.function.Supplier;
 
 import static org.axonframework.common.BuilderUtils.assertNonNull;
 import static org.axonframework.common.jdbc.JdbcUtils.closeQuietly;
@@ -71,7 +72,7 @@ public class JdbcSagaStore implements SagaStore<Object> {
         builder.validate();
         this.connectionProvider = builder.connectionProvider;
         this.sqlSchema = builder.sqlSchema;
-        this.serializer = builder.serializer;
+        this.serializer = builder.serializer.get();
     }
 
     /**
@@ -111,11 +112,7 @@ public class JdbcSagaStore implements SagaStore<Object> {
                 logger.debug("Loaded saga id [{}] of type [{}]", sagaIdentifier, loadedSaga.getClass().getName());
             }
 
-            Set<AssociationValue> associations = sqlSchema.readAssociationValues(
-                    sqlSchema.sql_findAssociations(conn, sagaIdentifier, sagaTypeName(sagaType)).executeQuery()
-            );
-
-            return new EntryImpl<>(associations, loadedSaga);
+            return new EntryImpl<>(loadAssociations(conn, sagaTypeName(sagaType), sagaIdentifier), loadedSaga);
         } catch (SQLException e) {
             throw new SagaStorageException("Exception while loading a Saga", e);
         } finally {
@@ -256,6 +253,20 @@ public class JdbcSagaStore implements SagaStore<Object> {
         }
     }
 
+    private Set<AssociationValue> loadAssociations(final Connection conn, final String sagaTypeName, final String sagaIdentifier) throws SQLException {
+        PreparedStatement statement = null;
+        ResultSet resultSet = null;
+        try {
+            statement = sqlSchema.sql_findAssociations(conn, sagaIdentifier, sagaTypeName);
+            resultSet = statement.executeQuery();
+            return sqlSchema.readAssociationValues(resultSet);
+        } finally {
+            closeQuietly(statement);
+            closeQuietly(resultSet);
+        }
+    }
+
+
     private String sagaTypeName(Class<?> sagaType) {
         return serializer.typeForClass(sagaType).getName();
     }
@@ -297,7 +308,7 @@ public class JdbcSagaStore implements SagaStore<Object> {
 
         private ConnectionProvider connectionProvider;
         private SagaSqlSchema sqlSchema = new GenericSagaSqlSchema();
-        private Serializer serializer = XStreamSerializer.builder().build();
+        private Supplier<Serializer> serializer = XStreamSerializer::defaultSerializer;
 
         /**
          * Sets the {@link ConnectionProvider} which provides access to a JDBC connection.
@@ -351,7 +362,7 @@ public class JdbcSagaStore implements SagaStore<Object> {
          */
         public Builder serializer(Serializer serializer) {
             assertNonNull(serializer, "Serializer may not be null");
-            this.serializer = serializer;
+            this.serializer = () -> serializer;
             return this;
         }
 

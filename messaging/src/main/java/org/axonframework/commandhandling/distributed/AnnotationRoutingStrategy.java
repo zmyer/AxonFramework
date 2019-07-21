@@ -38,22 +38,20 @@ import static org.axonframework.common.ReflectionUtils.*;
  * that commands with the same identifier, thus dealt with by the same target, are dispatched to the same node in
  * a {@link DistributedCommandBus}.
  * <p>
- * An example would be the {@link org.axonframework.commandhandling.TargetAggregateIdentifier}, which is annotated with
- * RoutingKey. See {@link org.axonframework.commandhandling.AnnotationCommandTargetResolver} for more details on this
- * approach.
+ * An example would be the TargetAggregateIdentifier annotation, which is meta-annotated with RoutingKey. See the
+ * AnnotationCommandTargetResolver for more details on this approach.
  * <p/>
  * This class requires the returned routing keys to implement a proper {@link Object#toString()} method. An inconsistent
  * toString() method may result in different members using different routing keys for the same identifier.
  *
  * @author Allard Buijze
- * @see org.axonframework.commandhandling.TargetAggregateIdentifier
- * @see org.axonframework.commandhandling.AnnotationCommandTargetResolver
  * @see DistributedCommandBus
  * @since 2.0
  */
 public class AnnotationRoutingStrategy extends AbstractRoutingStrategy {
 
     private static final RoutingKeyResolver NO_RESOLVE = new RoutingKeyResolver((Method) null);
+    private static final String NULL_DEFAULT = null;
 
     private final Class<? extends Annotation> annotationType;
     private final Map<Class<?>, RoutingKeyResolver> resolverMap = new ConcurrentHashMap<>();
@@ -159,9 +157,9 @@ public class AnnotationRoutingStrategy extends AbstractRoutingStrategy {
 
         public String identify(Object command) throws InvocationTargetException, IllegalAccessException {
             if (method != null) {
-                return Objects.toString(method.invoke(command));
+                return Objects.toString(method.invoke(command), NULL_DEFAULT);
             } else if (field != null) {
-                return Objects.toString(ReflectionUtils.getFieldValue(field, command));
+                return Objects.toString(ReflectionUtils.getFieldValue(field, command), NULL_DEFAULT);
             }
             return null;
         }
