@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  ~ Copyright (c) 2010-2018. Axon Framework
+  ~ Copyright (c) 2010-2020. Axon Framework
   ~
   ~ Licensed under the Apache License, Version 2.0 (the "License");
   ~ you may not use this file except in compliance with the License.
   ~ You may obtain a copy of the License at
   ~
-  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~    http://www.apache.org/licenses/LICENSE-2.0
   ~
   ~ Unless required by applicable law or agreed to in writing, software
   ~ distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,7 +20,7 @@
     <parent>
         <artifactId>axon</artifactId>
         <groupId>org.axonframework</groupId>
-        <version>4.2-SNAPSHOT</version>
+        <version>4.4-SNAPSHOT</version>
     </parent>
 
     <artifactId>axon-configuration</artifactId>
@@ -113,7 +113,6 @@
                             org.axonframework.config.*
                         </Export-Package>
                         <Import-Package>
-                            org.slf4j.*,
                             *;resolution:=optional
                         </Import-Package>
                     </instructions>
@@ -130,7 +129,6 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-enforcer-plugin</artifactId>
-                <version>1.4.1</version>
                 <executions>
                     <execution>
                         <id>enforce-banned-dependencies</id>

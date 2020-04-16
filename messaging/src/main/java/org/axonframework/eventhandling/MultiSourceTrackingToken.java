@@ -23,11 +23,13 @@ import org.axonframework.common.Assert;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.beans.ConstructorProperties;
 import java.io.Serializable;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalLong;
+import java.util.StringJoiner;
 
 /**
  * Combined tracking token used when processing from multiple event sources
@@ -49,6 +51,7 @@ public class MultiSourceTrackingToken implements TrackingToken, Serializable {
      * @param trackingTokens the map of tokens which make up the {@link MultiSourceTrackingToken}
      */
     @JsonCreator
+    @ConstructorProperties({"trackingTokens"})
     public MultiSourceTrackingToken(@JsonProperty("trackingTokens") Map<String, TrackingToken> trackingTokens) {
         this.trackingTokens = trackingTokens;
     }
@@ -128,8 +131,13 @@ public class MultiSourceTrackingToken implements TrackingToken, Serializable {
 
         //as soon as one delegated token doesn't cover return false
         for (Map.Entry<String, TrackingToken> trackingTokenEntry : trackingTokens.entrySet()) {
-            if (!trackingTokenEntry.getValue().covers(otherMultiToken.trackingTokens
-                                                              .get(trackingTokenEntry.getKey()))) {
+            TrackingToken constituent = trackingTokenEntry.getValue();
+            TrackingToken otherConstituent = otherMultiToken.trackingTokens.get(trackingTokenEntry.getKey());
+            if (constituent == null) {
+                if (otherConstituent != null) {
+                    return false;
+                }
+            } else if (otherConstituent != null && !constituent.covers(otherConstituent)) {
                 return false;
             }
         }
@@ -219,5 +227,12 @@ public class MultiSourceTrackingToken implements TrackingToken, Serializable {
     @Override
     public int hashCode() {
         return Objects.hash(trackingTokens);
+    }
+
+    @Override
+    public String toString() {
+        StringJoiner joiner = new StringJoiner(",", "MultiSourceTrackingToken{", "}");
+        trackingTokens.forEach((name, token) -> joiner.add(String.format("%s=%s", name, token)));
+        return joiner.toString();
     }
 }

@@ -14,22 +14,6 @@
  * limitations under the License.
  */
 
-/*
- * Copyright (c) 2010-2018. Axon Framework
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package org.axonframework.springboot;
 
 import org.axonframework.eventhandling.TrackingEventProcessorConfiguration;
@@ -82,12 +66,13 @@ public class EventProcessorProperties {
         private String source;
 
         /**
-         * Indicates whether this processor should be Tracking, or Subscribing its source.
+         * Indicates whether this processor should be Tracking, or Subscribing its source. Defaults to Tracking.
          */
-        private Mode mode = Mode.SUBSCRIBING;
+        private Mode mode = Mode.TRACKING;
 
         /**
          * Indicates the number of segments that should be created when the processor starts for the first time.
+         * Defaults to 1.
          */
         private int initialSegmentCount = 1;
 
@@ -101,13 +86,13 @@ public class EventProcessorProperties {
         /**
          * The time unit of tokens claim interval.
          *
-         * Defaults to MILLISECONDS.
+         * Defaults to {@link TimeUnit#MILLISECONDS}.
          */
         private TimeUnit tokenClaimIntervalTimeUnit = TimeUnit.MILLISECONDS;
 
         /**
          * The maximum number of threads the processor should process events with. Defaults to the number of initial
-         * segments if this is not further specified.
+         * segments if this is not further specified. Defaults to 1.
          */
         private int threadCount = -1;
 

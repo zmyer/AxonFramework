@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2018. AxonIQ
+ * Copyright (c) 2010-2020. Axon Framework
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -17,24 +18,42 @@ package org.axonframework.axonserver.connector.event;
 
 import io.axoniq.axonserver.grpc.event.Confirmation;
 import io.axoniq.axonserver.grpc.event.Event;
-import io.axoniq.axonserver.grpc.event.*;
-import io.grpc.stub.StreamObserver;
 import io.axoniq.axonserver.grpc.event.EventStoreGrpc;
 import io.axoniq.axonserver.grpc.event.EventWithToken;
 import io.axoniq.axonserver.grpc.event.GetAggregateEventsRequest;
 import io.axoniq.axonserver.grpc.event.GetEventsRequest;
+import io.axoniq.axonserver.grpc.event.QueryEventsRequest;
+import io.axoniq.axonserver.grpc.event.QueryEventsResponse;
 import io.axoniq.axonserver.grpc.event.ReadHighestSequenceNrRequest;
 import io.axoniq.axonserver.grpc.event.ReadHighestSequenceNrResponse;
+import io.grpc.stub.StreamObserver;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
+/**
+ * EventStore implementation used fro testing purposes. It makes it easier to verify events, snapshots and requests
+ * within EventStore.
+ */
 public class EventStoreImpl extends EventStoreGrpc.EventStoreImplBase {
 
     private final List<Event> events = new LinkedList<>();
+    private final Map<String, Event> snapshots = new HashMap<>();
+    private final List<GetEventsRequest> getEventsRequests = new ArrayList<>();
+    private final List<QueryEventsRequest> queryEventsRequests = new ArrayList<>();
+
+    public List<GetEventsRequest> getEventsRequests() {
+        return getEventsRequests;
+    }
+
+    public List<QueryEventsRequest> getQueryEventsRequests() {
+        return queryEventsRequests;
+    }
 
     @Override
     public StreamObserver<Event> appendEvent(StreamObserver<Confirmation> responseObserver) {
@@ -63,12 +82,19 @@ public class EventStoreImpl extends EventStoreGrpc.EventStoreImplBase {
 
     @Override
     public void appendSnapshot(Event request, StreamObserver<Confirmation> responseObserver) {
-        super.appendSnapshot(request, responseObserver);
+        snapshots.put(request.getAggregateIdentifier(), request.toBuilder().setSnapshot(true).build());
+        responseObserver.onNext(Confirmation.newBuilder().setSuccess(true).build());
+        responseObserver.onCompleted();
     }
 
     @Override
     public void listAggregateEvents(GetAggregateEventsRequest request, StreamObserver<Event> responseObserver) {
+        Event snapshot = snapshots.get(request.getAggregateId());
+        if (snapshot != null) {
+            responseObserver.onNext(snapshot);
+        }
         events.stream().filter(e -> e.getAggregateIdentifier().equals(request.getAggregateId()))
+              .filter(e -> snapshot == null || snapshot.getAggregateSequenceNumber() < e.getAggregateSequenceNumber())
               .forEach(responseObserver::onNext);
         responseObserver.onCompleted();
     }
@@ -82,6 +108,7 @@ public class EventStoreImpl extends EventStoreGrpc.EventStoreImplBase {
 
             @Override
             public void onNext(GetEventsRequest getEventsRequest) {
+                getEventsRequests.add(getEventsRequest);
                 long oldPermits = permits.getAndAdd(getEventsRequest.getNumberOfPermits());
                 if (token == 0) {
                     token = getEventsRequest.getTrackingToken();
@@ -107,6 +134,26 @@ public class EventStoreImpl extends EventStoreGrpc.EventStoreImplBase {
             @Override
             public void onCompleted() {
                 responseObserver.onCompleted();
+            }
+        };
+    }
+
+    @Override
+    public StreamObserver<QueryEventsRequest> queryEvents(StreamObserver<QueryEventsResponse> responseObserver) {
+        return new StreamObserver<QueryEventsRequest>() {
+            @Override
+            public void onNext(QueryEventsRequest value) {
+                queryEventsRequests.add(value);
+            }
+
+            @Override
+            public void onError(Throwable t) {
+
+            }
+
+            @Override
+            public void onCompleted() {
+
             }
         };
     }

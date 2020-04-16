@@ -40,7 +40,15 @@ public class AxonServerConfiguration {
     private static final String DEFAULT_CONTEXT = "default";
 
     /**
-     * Comma separated list of AxonDB servers. Each element is hostname or hostname:grpcPort. When no grpcPort is
+     * Whether (automatic) configuration of the AxonServer Connector is enabled. When {@code false}, the connector will
+     * not be implicitly be configured. Defaults to {@code true}.
+     * <p>
+     * Note that this setting will only affect automatic configuration by Application Containers (such as Spring).
+     */
+    private boolean enabled = true;
+
+    /**
+     * Comma separated list of AxonServer servers. Each element is hostname or hostname:grpcPort. When no grpcPort is
      * specified, default port 8123 is used.
      */
     private String servers = DEFAULT_SERVERS;
@@ -97,6 +105,24 @@ public class AxonServerConfiguration {
      * A value of {@code null}, 0, and negative values will have the threshold set to 50% of "initial-nr-of-permits".
      */
     private Integer newPermitsThreshold = null;
+
+    /**
+     * Specific flow control settings for the event message stream.
+     * <p>
+     * When not specified (null) the default flow control properties initialNrOfPermits, nrOfNewPermits en newPermitsThreshold
+     * will be used.
+     */
+    private FlowControlConfiguration eventFlowControl;
+
+    /**
+     * Specific flow control settings for the queue message stream
+     */
+    private FlowControlConfiguration queryFlowControl;
+
+    /**
+     * Specific flow control settings for the command message stream
+     */
+    private FlowControlConfiguration commandFlowControl;
 
     /**
      * Number of threads executing commands
@@ -156,17 +182,44 @@ public class AxonServerConfiguration {
     private int commitTimeout = 10000;
 
     /**
+     * Flag that allows blacklisting of Event types to be disabled. Disabling this may have serious performance impact,
+     * as it requires all messages from AxonServer to be sent to clients, even if a Client is unable to process the
+     * message.
+     * <p>
+     * Default is to have blacklisting enabled
+     */
+    private boolean disableEventBlacklisting = false;
+
+    /**
      * The number of messages that may be in-transit on the network/grpc level when streaming data from the server.
      * Setting this to 0 (or a negative value) will disable buffering, and requires each message sent by the server to
      * be acknowledged before the next message may be sent. Defaults to 500.
      */
     private int maxGrpcBufferedMessages = 500;
 
+
     /**
-     * Instantiate a default {@link AxonServerConfiguration}.
+     * It represents the fixed value of load factor sent to Axon Server for any command's subscription if
+     * no specific implementation of CommandLoadFactorProvider is configured. The default value is 100.
      */
-    public AxonServerConfiguration() {
-    }
+    private int commandLoadFactor = 100;
+
+    /**
+     * Represents the maximum time in milliseconds a request for the initial Axon Server connection may last.
+     * Defaults to 5000 (5 seconds).
+     */
+    private long connectTimeout = 5000;
+
+    /**
+     * Indicates whether it is OK to query events from the local Axon Server node - the node the client is currently
+     * connected to. This means that the client will probably get stale events since all events my not be replicated to
+     * this node yet. Can be used when the criteria for eventual consistency is less strict. It will spread the load for querying
+     * events - not all requests will go to the leader of the cluster anymore.
+     * <p>
+     * If Axon Server SE is used, this property has no effect.
+     * </p>
+     */
+    private boolean allowReadingEventsFromFollower = false;
 
     /**
      * Instantiate a {@link Builder} to create an {@link AxonServerConfiguration}.
@@ -180,6 +233,20 @@ public class AxonServerConfiguration {
         }
 
         return builder;
+    }
+
+    /**
+     * Instantiate a default {@link AxonServerConfiguration}.
+     */
+    public AxonServerConfiguration() {
+    }
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
     }
 
     public String getServers() {
@@ -276,7 +343,7 @@ public class AxonServerConfiguration {
         return Arrays.stream(serverArr).map(server -> {
             String[] s = server.trim().split(":");
             if (s.length > 1) {
-                return NodeInfo.newBuilder().setHostName(s[0]).setGrpcPort(Integer.valueOf(s[1])).build();
+                return NodeInfo.newBuilder().setHostName(s[0]).setGrpcPort(Integer.parseInt(s[1])).build();
             }
             return NodeInfo.newBuilder().setHostName(s[0]).setGrpcPort(DEFAULT_GRPC_PORT).build();
         }).collect(Collectors.toList());
@@ -368,6 +435,14 @@ public class AxonServerConfiguration {
         this.snapshotPrefetch = snapshotPrefetch;
     }
 
+    public boolean isDisableEventBlacklisting() {
+        return disableEventBlacklisting;
+    }
+
+    public void setDisableEventBlacklisting(boolean disableEventBlacklisting) {
+        this.disableEventBlacklisting = disableEventBlacklisting;
+    }
+
     public int getCommitTimeout() {
         return commitTimeout;
     }
@@ -382,6 +457,141 @@ public class AxonServerConfiguration {
 
     public void setMaxGrpcBufferedMessages(int maxGrpcBufferedMessages) {
         this.maxGrpcBufferedMessages = maxGrpcBufferedMessages;
+    }
+
+    public int getCommandLoadFactor() {
+        return commandLoadFactor;
+    }
+
+    public void setCommandLoadFactor(int commandLoadFactor) {
+        this.commandLoadFactor = commandLoadFactor;
+    }
+
+    public long getConnectTimeout() {
+        return connectTimeout;
+    }
+
+    public void setConnectTimeout(long connectTimeout) {
+        this.connectTimeout = connectTimeout;
+    }
+
+    public boolean isAllowReadingEventsFromFollower() {
+        return allowReadingEventsFromFollower;
+    }
+
+    public void setAllowReadingEventsFromFollower(boolean allowReadingEventsFromFollower) {
+        this.allowReadingEventsFromFollower = allowReadingEventsFromFollower;
+    }
+
+    public FlowControlConfiguration getEventFlowControl() {
+        if (eventFlowControl == null) {
+            return new FlowControlConfiguration(getInitialNrOfPermits(), getNrOfNewPermits(), getNewPermitsThreshold());
+        }
+        return eventFlowControl;
+    }
+
+    public void setEventFlowControl(FlowControlConfiguration eventFlowControl) {
+        this.eventFlowControl = eventFlowControl;
+    }
+
+    public FlowControlConfiguration getQueryFlowControl() {
+        if (queryFlowControl == null) {
+            return new FlowControlConfiguration(getInitialNrOfPermits(),getNrOfNewPermits(), getNewPermitsThreshold());
+        }
+        return queryFlowControl;
+    }
+
+    public void setQueryFlowControl(FlowControlConfiguration queryFlowControl) {
+        this.queryFlowControl = queryFlowControl;
+    }
+
+    public FlowControlConfiguration getCommandFlowControl() {
+        if (commandFlowControl == null) {
+            return new FlowControlConfiguration(getInitialNrOfPermits(), getNrOfNewPermits(), getNewPermitsThreshold());
+        }
+        return commandFlowControl;
+    }
+
+    public void setCommandFlowControl(FlowControlConfiguration commandFlowControl) {
+        this.commandFlowControl = commandFlowControl;
+    }
+
+    public FlowControlConfiguration getDefaultFlowControlConfiguration() {
+        return new FlowControlConfiguration(initialNrOfPermits,nrOfNewPermits,newPermitsThreshold);
+    }
+
+    /**
+     * Configuration class for Flow Control of specific message types.
+     *
+     * @author Gerlo Hesselink
+     * @since 4.3
+     */
+    public static class FlowControlConfiguration {
+
+        /**
+         * Initial number of permits send for message streams (events, commands, queries)
+         */
+        private Integer initialNrOfPermits = 5000;
+
+        /**
+         * Additional number of permits send for message streams (events, commands, queries) when application
+         * is ready for more messages.
+         * <p>
+         * A value of {@code null}, 0, and negative values will have the client request the number of permits
+         * required to get from the "new-permits-threshold" to "initial-nr-of-permits".
+         */
+        private Integer nrOfNewPermits = null;
+
+        /**
+         * Threshold at which application sends new permits to server
+         * <p>
+         * A value of {@code null}, 0, and negative values will have the threshold set to 50% of "initial-nr-of-permits".
+         */
+        private Integer newPermitsThreshold = null;
+
+        public FlowControlConfiguration() {
+        }
+
+        /**
+         * @param initialNrOfPermits    Initial nr of new permits
+         * @param nrOfNewPermits        Additional number of permits when applictation is ready for message
+         * @param newPermitsThreshold   Threshold at which application sends new permits to server
+         */
+        public FlowControlConfiguration(Integer initialNrOfPermits, Integer nrOfNewPermits, Integer newPermitsThreshold) {
+            this.initialNrOfPermits = initialNrOfPermits;
+            this.nrOfNewPermits = nrOfNewPermits;
+            this.newPermitsThreshold = newPermitsThreshold;
+        }
+
+        public Integer getInitialNrOfPermits() {
+            return this.initialNrOfPermits;
+        }
+
+        public void setInitialNrOfPermits(Integer initialNrOfPermits) {
+            this.initialNrOfPermits = initialNrOfPermits;
+        }
+
+        public Integer getNrOfNewPermits() {
+            if (this.nrOfNewPermits == null || this.nrOfNewPermits <= 0) {
+                return getInitialNrOfPermits() - getNewPermitsThreshold();
+            }
+            return this.nrOfNewPermits;
+        }
+
+        public void setNrOfNewPermits(Integer nrOfNewPermits) {
+            this.nrOfNewPermits = nrOfNewPermits;
+        }
+
+        public Integer getNewPermitsThreshold() {
+            if (this.newPermitsThreshold == null || this.newPermitsThreshold <= 0) {
+                return this.initialNrOfPermits / 2;
+            }
+            return this.newPermitsThreshold;
+        }
+
+        public void setNewPermitsThreshold(Integer newPermitsThreshold) {
+            this.newPermitsThreshold = newPermitsThreshold;
+        }
     }
 
     @SuppressWarnings("unused")
@@ -412,10 +622,30 @@ public class AxonServerConfiguration {
             return this;
         }
 
+        public Builder allowReadingEventsFromFollower(boolean allowReadingEventsFromFollower) {
+            instance.allowReadingEventsFromFollower = allowReadingEventsFromFollower;
+            return this;
+        }
+
         public Builder flowControl(int initialNrOfPermits, int nrOfNewPermits, int newPermitsThreshold) {
             instance.initialNrOfPermits = initialNrOfPermits;
             instance.nrOfNewPermits = nrOfNewPermits;
             instance.newPermitsThreshold = newPermitsThreshold;
+            return this;
+        }
+
+        public Builder commandFlowControl(int initialNrOfPermits, int nrOfNewPermits, int newPermitsThreshold) {
+            instance.setCommandFlowControl(new FlowControlConfiguration(initialNrOfPermits,nrOfNewPermits,newPermitsThreshold));
+            return this;
+        }
+
+        public Builder queryFlowControl(int initialNrOfPermits, int nrOfNewPermits, int newPermitsThreshold) {
+            instance.setQueryFlowControl(new FlowControlConfiguration(initialNrOfPermits,nrOfNewPermits,newPermitsThreshold));
+            return this;
+        }
+
+        public Builder eventFlowControl(int initialNrOfPermits, int nrOfNewPermits, int newPermitsThreshold) {
+            instance.setEventFlowControl(new FlowControlConfiguration(initialNrOfPermits,nrOfNewPermits,newPermitsThreshold));
             return this;
         }
 
@@ -436,6 +666,11 @@ public class AxonServerConfiguration {
 
         public Builder snapshotPrefetch(int snapshotPrefetch) {
             instance.snapshotPrefetch = snapshotPrefetch;
+            return this;
+        }
+
+        public Builder commandLoadFactor(int commandLoadFactor) {
+            instance.commandLoadFactor = commandLoadFactor;
             return this;
         }
 
@@ -465,6 +700,11 @@ public class AxonServerConfiguration {
 
         public Builder clientId(String clientId) {
             instance.setClientId(clientId);
+            return this;
+        }
+
+        public Builder connectTimeout(long timeout) {
+            instance.setConnectTimeout(timeout);
             return this;
         }
     }

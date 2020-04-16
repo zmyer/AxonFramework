@@ -18,9 +18,10 @@ package org.axonframework.eventsourcing.eventstore;
 
 import org.axonframework.common.jdbc.PersistenceExceptionResolver;
 import org.axonframework.eventhandling.DomainEventMessage;
+import org.axonframework.modelling.command.AggregateStreamCreationException;
 import org.axonframework.modelling.command.ConcurrencyException;
 import org.axonframework.serialization.upcasting.event.EventUpcaster;
-import org.junit.Test;
+import org.junit.jupiter.api.*;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,10 +31,9 @@ import java.util.stream.Stream;
 
 import static java.util.stream.Collectors.toList;
 import static org.axonframework.eventsourcing.utils.EventStoreTestUtils.*;
-import static org.junit.Assert.assertEquals;
-import static org.mockito.ArgumentMatchers.isA;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 /**
  * @author Rene de Waele
@@ -44,14 +44,26 @@ public abstract class AbstractEventStorageEngineTest extends EventStorageEngineT
     private AbstractEventStorageEngine testSubject;
 
     @DirtiesContext
-    @Test(expected = ConcurrencyException.class)
+    @Test
+    public void testUniqueKeyConstraintOnFirstEventIdentifierThrowsAggregateIdentifierAlreadyExistsException() {
+        assertThrows(
+                AggregateStreamCreationException.class,
+                () -> testSubject.appendEvents(createEvent("id", AGGREGATE, 0), createEvent("id", "otherAggregate", 0))
+        );
+    }
+
+    @DirtiesContext
+    @Test
     public void testUniqueKeyConstraintOnEventIdentifier() {
-        testSubject.appendEvents(createEvent("id", AGGREGATE, 0), createEvent("id", "otherAggregate", 0));
+        assertThrows(
+                ConcurrencyException.class,
+                () -> testSubject.appendEvents(createEvent("id", AGGREGATE, 1), createEvent("id", "otherAggregate", 1))
+        );
     }
 
     @Test
     @DirtiesContext
-    @SuppressWarnings({"unchecked", "OptionalGetWithoutIsPresent"})
+    @SuppressWarnings({"unchecked"})
     public void testStoreAndLoadEventsWithUpcaster() {
         EventUpcaster mockUpcasterChain = mock(EventUpcaster.class);
         when(mockUpcasterChain.upcast(isA(Stream.class))).thenAnswer(invocation -> {
@@ -75,16 +87,31 @@ public abstract class AbstractEventStorageEngineTest extends EventStorageEngineT
     }
 
     @DirtiesContext
-    @Test(expected = ConcurrencyException.class)
-    public void testStoreDuplicateEventWithExceptionTranslator() {
-        testSubject.appendEvents(createEvent(0), createEvent(0));
+    @Test
+    public void testStoreDuplicateFirstEventWithExceptionTranslatorThrowsAggregateIdentifierAlreadyExistsException() {
+        assertThrows(
+                AggregateStreamCreationException.class,
+                () -> testSubject.appendEvents(createEvent(0), createEvent(0))
+        );
     }
 
     @DirtiesContext
-    @Test(expected = EventStoreException.class)
+    @Test
+    public void testStoreDuplicateEventWithExceptionTranslator() {
+        assertThrows(
+                ConcurrencyException.class,
+                () -> testSubject.appendEvents(createEvent(1), createEvent(1))
+        );
+    }
+
+    @DirtiesContext
+    @Test
     public void testStoreDuplicateEventWithoutExceptionResolver() {
         testSubject = createEngine((PersistenceExceptionResolver) e -> false);
-        testSubject.appendEvents(createEvent(0), createEvent(0));
+        assertThrows(
+                EventStoreException.class,
+                () -> testSubject.appendEvents(createEvent(0), createEvent(0))
+        );
     }
 
     protected void setTestSubject(AbstractEventStorageEngine testSubject) {

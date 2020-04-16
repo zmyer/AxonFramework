@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2018. AxonIQ
+ * Copyright (c) 2010-2019. Axon Framework
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -15,27 +16,23 @@
 
 package org.axonframework.axonserver.connector.query.subscription;
 
-import io.axoniq.axonserver.grpc.query.QueryResponse;
-import io.axoniq.axonserver.grpc.query.QueryUpdate;
-import io.axoniq.axonserver.grpc.query.SubscriptionQuery;
-import io.axoniq.axonserver.grpc.query.SubscriptionQueryRequest;
-import io.axoniq.axonserver.grpc.query.SubscriptionQueryResponse;
+import io.axoniq.axonserver.grpc.query.*;
 import org.axonframework.axonserver.connector.AxonServerConfiguration;
 import org.axonframework.queryhandling.SubscriptionQueryBackpressure;
-import org.junit.*;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import reactor.core.publisher.FluxSink;
 
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Created by Sara Pellegrini on 18/06/2018.
  * sara.pellegrini@gmail.com
  */
-public class AxonServerSubscriptionQueryResultTest {
-
+class AxonServerSubscriptionQueryResultTest {
 
     private SubscriptionQuery queryMessage;
 
@@ -48,8 +45,8 @@ public class AxonServerSubscriptionQueryResultTest {
     private SubscriptionQueryResponse initialResult;
 
 
-    @Before
-    public void setUp(){
+    @BeforeEach
+    void setUp(){
         requestObserver = new FakeStreamObserver<>();
         queryMessage = SubscriptionQuery.newBuilder().build();
         update = SubscriptionQueryResponse.newBuilder().setUpdate(QueryUpdate.newBuilder()).build();
@@ -61,7 +58,7 @@ public class AxonServerSubscriptionQueryResultTest {
     }
 
     @Test
-    public void testSubscribeUpdates() {
+    void testSubscribeUpdates() {
         SubscriptionQueryBackpressure backPressure = new SubscriptionQueryBackpressure(FluxSink.OverflowStrategy.ERROR);
         AxonServerSubscriptionQueryResult target = new AxonServerSubscriptionQueryResult(
                 queryMessage, responseStream -> requestObserver, configuration, backPressure, 10, () -> {});
@@ -73,7 +70,7 @@ public class AxonServerSubscriptionQueryResultTest {
     }
 
     @Test
-    public void testSubscribeInitialResponse() {
+    void testSubscribeInitialResponse() {
         SubscriptionQueryBackpressure backPressure = new SubscriptionQueryBackpressure(FluxSink.OverflowStrategy.ERROR);
         AxonServerSubscriptionQueryResult target = new AxonServerSubscriptionQueryResult(
                 queryMessage, responseStream -> requestObserver, configuration, backPressure, 10, () -> {});
@@ -85,7 +82,7 @@ public class AxonServerSubscriptionQueryResultTest {
     }
 
     @Test
-    public void testErrorOverflowStrategy() {
+    void testErrorOverflowStrategy() {
         SubscriptionQueryBackpressure backPressure = new SubscriptionQueryBackpressure(FluxSink.OverflowStrategy.ERROR);
         AxonServerSubscriptionQueryResult target = new AxonServerSubscriptionQueryResult(
                 queryMessage, responseStream -> requestObserver, configuration, backPressure, 2, () -> {});

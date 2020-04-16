@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2010-2019. Axon Framework
+ * Copyright (c) 2010-2020. Axon Framework
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,6 +21,9 @@ import org.axonframework.common.Registration;
 import org.axonframework.common.io.IOUtils;
 import org.axonframework.common.transaction.NoTransactionManager;
 import org.axonframework.common.transaction.TransactionManager;
+import org.axonframework.lifecycle.Phase;
+import org.axonframework.lifecycle.ShutdownHandler;
+import org.axonframework.lifecycle.StartHandler;
 import org.axonframework.messaging.SubscribableMessageSource;
 import org.axonframework.messaging.unitofwork.BatchingUnitOfWork;
 import org.axonframework.messaging.unitofwork.RollbackConfiguration;
@@ -52,22 +55,6 @@ public class SubscribingEventProcessor extends AbstractEventProcessor {
     private volatile Registration eventBusRegistration;
 
     /**
-     * Instantiate a {@link SubscribingEventProcessor} based on the fields contained in the {@link Builder}.
-     * <p>
-     * Will assert that the Event Processor {@code name}, {@link EventHandlerInvoker} and
-     * {@link SubscribableMessageSource} are not {@code null}, and will throw an {@link AxonConfigurationException} if
-     * any of them is {@code null}.
-     *
-     * @param builder the {@link Builder} used to instantiate a {@link SubscribingEventProcessor} instance
-     */
-    protected SubscribingEventProcessor(Builder builder) {
-        super(builder);
-        this.messageSource = builder.messageSource;
-        this.processingStrategy = builder.processingStrategy;
-        this.transactionManager = builder.transactionManager;
-    }
-
-    /**
      * Instantiate a Builder to be able to create a {@link SubscribingEventProcessor}.
      * <p>
      * The {@link RollbackConfigurationType} defaults to a {@link RollbackConfigurationType#ANY_THROWABLE}, the
@@ -84,17 +71,36 @@ public class SubscribingEventProcessor extends AbstractEventProcessor {
     }
 
     /**
-     * Start this processor. This will register the processor with the {@link EventBus}.
+     * Instantiate a {@link SubscribingEventProcessor} based on the fields contained in the {@link Builder}.
+     * <p>
+     * Will assert that the Event Processor {@code name}, {@link EventHandlerInvoker} and
+     * {@link SubscribableMessageSource} are not {@code null}, and will throw an {@link AxonConfigurationException} if
+     * any of them is {@code null}.
+     *
+     * @param builder the {@link Builder} used to instantiate a {@link SubscribingEventProcessor} instance
      */
-    @SuppressWarnings("unchecked")
+    protected SubscribingEventProcessor(Builder builder) {
+        super(builder);
+        this.messageSource = builder.messageSource;
+        this.processingStrategy = builder.processingStrategy;
+        this.transactionManager = builder.transactionManager;
+    }
+
+    /**
+     * Start this processor. This will register the processor with the {@link EventBus}.
+     * <p>
+     * Upon start up of an application, this method will be invoked in the {@link Phase#LOCAL_MESSAGE_HANDLER_REGISTRATIONS}
+     * phase.
+     */
     @Override
+    @StartHandler(phase = Phase.LOCAL_MESSAGE_HANDLER_REGISTRATIONS)
     public void start() {
-        // prevent double registration
-        if (eventBusRegistration == null) {
-            eventBusRegistration =
-                    messageSource.subscribe(eventMessages -> processingStrategy.handle(eventMessages,
-                                                                                       this::process));
+        if (eventBusRegistration != null) {
+            // This event processor has already been started
+            return;
         }
+        eventBusRegistration =
+                messageSource.subscribe(eventMessages -> processingStrategy.handle(eventMessages, this::process));
     }
 
     /**
@@ -118,11 +124,24 @@ public class SubscribingEventProcessor extends AbstractEventProcessor {
 
     /**
      * Shut down this processor. This will deregister the processor with the {@link EventBus}.
+     * <p>
+     * Upon shutdown of an application, this method will be invoked in the {@link Phase#LOCAL_MESSAGE_HANDLER_REGISTRATIONS}
+     * phase.
      */
     @Override
+    @ShutdownHandler(phase = Phase.LOCAL_MESSAGE_HANDLER_REGISTRATIONS)
     public void shutDown() {
         IOUtils.closeQuietly(eventBusRegistration);
         eventBusRegistration = null;
+    }
+
+    /**
+     * Returns the message source from which this processor receives its events
+     *
+     * @return the MessageSource from which the processor receives its events
+     */
+    public SubscribableMessageSource<? extends EventMessage<?>> getMessageSource() {
+        return messageSource;
     }
 
     /**

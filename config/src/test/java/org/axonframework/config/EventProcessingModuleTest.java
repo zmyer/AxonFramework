@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2010-2018. Axon Framework
+ * Copyright (c) 2010-2020. Axon Framework
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,24 +16,45 @@
 
 package org.axonframework.config;
 
-import org.axonframework.common.AxonConfigurationException;
 import org.axonframework.common.Registration;
-import org.axonframework.eventhandling.*;
+import org.axonframework.eventhandling.AbstractEventProcessor;
+import org.axonframework.eventhandling.ErrorContext;
+import org.axonframework.eventhandling.ErrorHandler;
+import org.axonframework.eventhandling.EventHandler;
+import org.axonframework.eventhandling.EventHandlerInvoker;
+import org.axonframework.eventhandling.EventMessage;
+import org.axonframework.eventhandling.EventMessageHandler;
+import org.axonframework.eventhandling.EventProcessor;
+import org.axonframework.eventhandling.GenericEventMessage;
+import org.axonframework.eventhandling.ListenerInvocationErrorHandler;
+import org.axonframework.eventhandling.MultiEventHandlerInvoker;
+import org.axonframework.eventhandling.PropagatingErrorHandler;
+import org.axonframework.eventhandling.SimpleEventBus;
+import org.axonframework.eventhandling.SimpleEventHandlerInvoker;
+import org.axonframework.eventhandling.SubscribingEventProcessor;
+import org.axonframework.eventhandling.TrackedEventMessage;
+import org.axonframework.eventhandling.TrackingEventProcessor;
 import org.axonframework.eventhandling.async.FullConcurrencyPolicy;
 import org.axonframework.eventhandling.async.SequentialPolicy;
 import org.axonframework.eventhandling.tokenstore.inmemory.InMemoryTokenStore;
 import org.axonframework.eventsourcing.eventstore.inmemory.InMemoryEventStorageEngine;
+import org.axonframework.lifecycle.LifecycleHandlerInvocationException;
 import org.axonframework.messaging.InterceptorChain;
 import org.axonframework.messaging.MessageHandlerInterceptor;
+import org.axonframework.messaging.StreamableMessageSource;
+import org.axonframework.messaging.SubscribableMessageSource;
 import org.axonframework.messaging.interceptors.CorrelationDataInterceptor;
 import org.axonframework.messaging.unitofwork.UnitOfWork;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.extension.*;
+import org.mockito.*;
+import org.mockito.junit.jupiter.*;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
@@ -41,20 +62,20 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.axonframework.common.ReflectionUtils.getFieldValue;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
-public class EventProcessingModuleTest {
+@ExtendWith(MockitoExtension.class)
+class EventProcessingModuleTest {
 
     private Configurer configurer;
 
-    @Before
-    public void setUp() {
+    @BeforeEach
+    void setUp() {
         configurer = DefaultConfigurer.defaultConfiguration();
     }
 
     @Test
-    public void testAssignmentRules() {
+    void testAssignmentRules() {
         Map<String, StubEventProcessor> processors = new HashMap<>();
         ConcurrentHashMap<Object, Object> map = new ConcurrentHashMap<>();
         AnnotatedBean annotatedBean = new AnnotatedBean();
@@ -85,7 +106,7 @@ public class EventProcessingModuleTest {
     }
 
     @Test
-    public void testProcessorsDefaultToSubscribingWhenUsingSimpleEventBus() {
+    void testProcessorsDefaultToSubscribingWhenUsingSimpleEventBus() {
         Configuration configuration = DefaultConfigurer.defaultConfiguration()
                                                        .configureEventBus(c -> SimpleEventBus.builder().build())
                                                        .eventProcessing(ep -> ep.registerEventHandler(c -> new SubscribingEventHandler())
@@ -98,18 +119,19 @@ public class EventProcessingModuleTest {
         assertTrue(configuration.eventProcessingConfiguration().eventProcessor("tracking").map(p -> p instanceof SubscribingEventProcessor).orElse(false));
     }
 
-    @Test(expected = AxonConfigurationException.class)
-    public void testAssigningATrackingProcessorFailsWhenUsingSimpleEventBus() {
-        DefaultConfigurer.defaultConfiguration()
-                         .configureEventBus(c -> SimpleEventBus.builder().build())
-                         .eventProcessing(ep -> ep.registerEventHandler(c -> new SubscribingEventHandler())
-                                                  .registerEventHandler(c -> new TrackingEventHandler())
-                                                  .registerTrackingEventProcessor("tracking"))
-                         .start();
+    @Test
+    void testAssigningATrackingProcessorFailsWhenUsingSimpleEventBus() {
+        Configurer configurer = DefaultConfigurer.defaultConfiguration()
+                                                 .configureEventBus(c -> SimpleEventBus.builder().build())
+                                                 .eventProcessing(ep -> ep.registerEventHandler(c -> new SubscribingEventHandler())
+                                                                          .registerEventHandler(c -> new TrackingEventHandler())
+                                                                          .registerTrackingEventProcessor("tracking"));
+
+        assertThrows(LifecycleHandlerInvocationException.class, configurer::start);
     }
 
     @Test
-    public void testAssignmentRulesOverrideThoseWithLowerPriority() {
+    void testAssignmentRulesOverrideThoseWithLowerPriority() {
         Map<String, StubEventProcessor> processors = new HashMap<>();
         ConcurrentHashMap<Object, Object> map = new ConcurrentHashMap<>();
         configurer.eventProcessing()
@@ -141,7 +163,7 @@ public class EventProcessingModuleTest {
     }
 
     @Test
-    public void testDefaultAssignToKeepsAnnotationScanning() {
+    void testDefaultAssignToKeepsAnnotationScanning() {
         Map<String, StubEventProcessor> processors = new HashMap<>();
         AnnotatedBean annotatedBean = new AnnotatedBean();
         Object object = new Object();
@@ -165,7 +187,7 @@ public class EventProcessingModuleTest {
     }
 
     @Test
-    public void testTypeAssignment() {
+    void testTypeAssignment() {
         configurer.eventProcessing()
                   .assignHandlerTypesMatching("myGroup", c -> "java.lang".equals(c.getPackage().getName()))
                   .registerSaga(Object.class)
@@ -182,7 +204,7 @@ public class EventProcessingModuleTest {
     }
 
     @Test
-    public void testAssignSequencingPolicy() throws NoSuchFieldException {
+    void testAssignSequencingPolicy() throws NoSuchFieldException {
         Object mockHandler = new Object();
         Object specialHandler = new Object();
         SequentialPolicy sequentialPolicy = new SequentialPolicy();
@@ -213,7 +235,7 @@ public class EventProcessingModuleTest {
     }
 
     @Test
-    public void testAssignInterceptors() {
+    void testAssignInterceptors() {
         StubInterceptor interceptor1 = new StubInterceptor();
         StubInterceptor interceptor2 = new StubInterceptor();
         configurer.eventProcessing()
@@ -233,7 +255,7 @@ public class EventProcessingModuleTest {
     }
 
     @Test
-    public void testConfigureMonitor() throws Exception {
+    void testConfigureMonitor() throws Exception {
         MessageCollectingMonitor subscribingMonitor = new MessageCollectingMonitor();
         MessageCollectingMonitor trackingMonitor = new MessageCollectingMonitor(1);
         CountDownLatch tokenStoreInvocation = new CountDownLatch(1);
@@ -256,7 +278,7 @@ public class EventProcessingModuleTest {
     }
 
     @Test
-    public void testConfigureDefaultListenerInvocationErrorHandler() throws Exception {
+    void testConfigureDefaultListenerInvocationErrorHandler() throws Exception {
         GenericEventMessage<Boolean> errorThrowingEventMessage = new GenericEventMessage<>(true);
 
         int expectedListenerInvocationErrorHandlerCalls = 2;
@@ -282,7 +304,7 @@ public class EventProcessingModuleTest {
     }
 
     @Test
-    public void testConfigureListenerInvocationErrorHandlerPerEventProcessor() throws Exception {
+    void testConfigureListenerInvocationErrorHandlerPerEventProcessor() throws Exception {
         GenericEventMessage<Boolean> errorThrowingEventMessage = new GenericEventMessage<>(true);
 
         int expectedErrorHandlerCalls = 1;
@@ -312,7 +334,7 @@ public class EventProcessingModuleTest {
     }
 
     @Test
-    public void testConfigureDefaultErrorHandler() throws Exception {
+    void testConfigureDefaultErrorHandler() throws Exception {
         GenericEventMessage<Integer> failingEventMessage = new GenericEventMessage<>(1000);
 
         int expectedErrorHandlerCalls = 2;
@@ -339,7 +361,64 @@ public class EventProcessingModuleTest {
     }
 
     @Test
-    public void testConfigureErrorHandlerPerEventProcessor() throws Exception {
+    void testTrackingProcessorsUsesConfiguredDefaultStreamableMessageSource(
+            @Mock StreamableMessageSource<TrackedEventMessage<?>> mock) {
+        configurer.eventProcessing().configureDefaultStreamableMessageSource(c -> mock);
+        configurer.eventProcessing().usingTrackingEventProcessors();
+        configurer.registerEventHandler(c -> new TrackingEventHandler());
+
+        Configuration config = configurer.start();
+        Optional<TrackingEventProcessor> processor = config.eventProcessingConfiguration().eventProcessor("tracking", TrackingEventProcessor.class);
+        assertTrue(processor.isPresent());
+        assertEquals(mock, processor.get().getMessageSource());
+    }
+
+    @Test
+    void testTrackingProcessorsUsesSpecificSource(
+            @Mock StreamableMessageSource<TrackedEventMessage<?>> mock,
+            @Mock StreamableMessageSource<TrackedEventMessage<?>> mock2) {
+        configurer.eventProcessing()
+                  .configureDefaultStreamableMessageSource(c -> mock)
+                  .registerTrackingEventProcessor("tracking", c -> mock2)
+                  .registerEventHandler(c -> new TrackingEventHandler());
+
+        Configuration config = configurer.start();
+        Optional<TrackingEventProcessor> processor = config.eventProcessingConfiguration().eventProcessor("tracking", TrackingEventProcessor.class);
+        assertTrue(processor.isPresent());
+        assertEquals(mock2, processor.get().getMessageSource());
+    }
+
+    @Test
+    void testSubscribingProcessorsUsesConfiguredDefaultSubscribableMessageSource(
+            @Mock SubscribableMessageSource<EventMessage<?>> mock) {
+        configurer.eventProcessing().configureDefaultSubscribableMessageSource(c -> mock);
+        configurer.eventProcessing().usingSubscribingEventProcessors();
+        configurer.registerEventHandler(c -> new SubscribingEventHandler());
+
+        Configuration config = configurer.start();
+        Optional<SubscribingEventProcessor> processor = config.eventProcessingConfiguration().eventProcessor("subscribing");
+        assertTrue(processor.isPresent());
+        assertEquals(mock, processor.get().getMessageSource());
+    }
+
+    @Test
+    void testSubscribingProcessorsUsesSpecificSource(
+            @Mock SubscribableMessageSource<EventMessage<?>> mock,
+            @Mock SubscribableMessageSource<EventMessage<?>> mock2) {
+        configurer.eventProcessing()
+                  .configureDefaultSubscribableMessageSource(c -> mock)
+                  .registerSubscribingEventProcessor("subscribing", c -> mock2)
+                  .registerEventHandler(c -> new SubscribingEventHandler());
+
+        Configuration config = configurer.start();
+        Optional<SubscribingEventProcessor> processor = config.eventProcessingConfiguration().eventProcessor("subscribing");
+        assertTrue(processor.isPresent());
+        assertEquals(mock2, processor.get().getMessageSource());
+    }
+
+
+    @Test
+    void testConfigureErrorHandlerPerEventProcessor() throws Exception {
         GenericEventMessage<Integer> failingEventMessage = new GenericEventMessage<>(1000);
 
         int expectedErrorHandlerCalls = 1;
@@ -367,6 +446,12 @@ public class EventProcessingModuleTest {
         } finally {
             config.shutdown();
         }
+    }
+
+    @Test
+    void testPackageOfObject() {
+        String expectedPackageName = EventProcessingModule.class.getPackage().getName();
+        assertEquals(expectedPackageName, EventProcessingModule.packageOfObject(this));
     }
 
     private void buildComplexEventHandlingConfiguration(CountDownLatch tokenStoreInvocation) {

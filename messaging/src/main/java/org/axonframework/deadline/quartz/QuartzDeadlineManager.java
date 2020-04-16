@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2010-2019. Axon Framework
+ * Copyright (c) 2010-2020. Axon Framework
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -24,11 +24,20 @@ import org.axonframework.deadline.AbstractDeadlineManager;
 import org.axonframework.deadline.DeadlineException;
 import org.axonframework.deadline.DeadlineManager;
 import org.axonframework.deadline.DeadlineMessage;
+import org.axonframework.lifecycle.Phase;
+import org.axonframework.lifecycle.ShutdownHandler;
 import org.axonframework.messaging.ScopeAwareProvider;
 import org.axonframework.messaging.ScopeDescriptor;
 import org.axonframework.serialization.Serializer;
 import org.axonframework.serialization.xml.XStreamSerializer;
-import org.quartz.*;
+import org.quartz.JobBuilder;
+import org.quartz.JobDataMap;
+import org.quartz.JobDetail;
+import org.quartz.JobKey;
+import org.quartz.Scheduler;
+import org.quartz.SchedulerException;
+import org.quartz.Trigger;
+import org.quartz.TriggerBuilder;
 import org.quartz.impl.matchers.GroupMatcher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,6 +45,7 @@ import org.slf4j.LoggerFactory;
 import java.sql.Date;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Set;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -115,7 +125,7 @@ public class QuartzDeadlineManager extends AbstractDeadlineManager {
                            String deadlineName,
                            Object messageOrPayload,
                            ScopeDescriptor deadlineScope) {
-        DeadlineMessage<Object> deadlineMessage = asDeadlineMessage(deadlineName, messageOrPayload);
+        DeadlineMessage<Object> deadlineMessage = asDeadlineMessage(deadlineName, messageOrPayload, triggerDateTime);
         String deadlineId = JOB_NAME_PREFIX + deadlineMessage.getIdentifier();
 
         runOnPrepareCommitOrNow(() -> {
@@ -158,6 +168,23 @@ public class QuartzDeadlineManager extends AbstractDeadlineManager {
         });
     }
 
+    @Override
+    public void cancelAllWithinScope(String deadlineName, ScopeDescriptor scope) {
+        try {
+            Set<JobKey> jobKeys = scheduler.getJobKeys(GroupMatcher.jobGroupEquals(deadlineName));
+            for (JobKey jobKey : jobKeys) {
+                JobDetail jobDetail = scheduler.getJobDetail(jobKey);
+                ScopeDescriptor jobScope = DeadlineJob.DeadlineJobDataBinder
+                        .deadlineScope(serializer, jobDetail.getJobDataMap());
+                if (scope.equals(jobScope)) {
+                    cancelSchedule(jobKey);
+                }
+            }
+        } catch (SchedulerException e) {
+            throw new DeadlineException("An error occurred while cancelling a timer for a deadline manager", e);
+        }
+    }
+
     private void cancelSchedule(JobKey jobKey) {
         try {
             if (!scheduler.deleteJob(jobKey)) {
@@ -182,6 +209,21 @@ public class QuartzDeadlineManager extends AbstractDeadlineManager {
                              .forJob(key)
                              .startAt(Date.from(triggerDateTime))
                              .build();
+    }
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Will shutdown in the {@link Phase#INBOUND_EVENT_CONNECTORS} phase.
+     */
+    @Override
+    @ShutdownHandler(phase = Phase.INBOUND_EVENT_CONNECTORS)
+    public void shutdown() {
+        try {
+            scheduler.shutdown(true);
+        } catch (SchedulerException e) {
+            throw new DeadlineException("An error occurred while trying to shutdown the deadline manager", e);
+        }
     }
 
     /**

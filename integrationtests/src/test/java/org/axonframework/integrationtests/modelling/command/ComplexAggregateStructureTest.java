@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2018. Axon Framework
+ * Copyright (c) 2010-2020. Axon Framework
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,22 +30,24 @@ import org.axonframework.common.Assert;
 import org.axonframework.eventhandling.EventBus;
 import org.axonframework.eventhandling.SimpleEventBus;
 import org.axonframework.eventsourcing.EventSourcingHandler;
-import org.junit.*;
+import org.junit.jupiter.api.*;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Callable;
 
 import static org.axonframework.modelling.command.AggregateLifecycle.apply;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 
-public class ComplexAggregateStructureTest {
+class ComplexAggregateStructureTest {
 
     @Test
-    public void testCommandsAreRoutedToCorrectEntity() throws Exception {
+    void testCommandsAreRoutedToCorrectEntity() throws Exception {
         AggregateModel<Book> bookAggregateModel = AnnotatedAggregateMetaModelFactory.inspectAggregate(Book.class);
         EventBus mockEventBus = SimpleEventBus.builder().build();
         mockEventBus.subscribe(m -> m.forEach(i -> System.out.println(i.getPayloadType().getName())));
-        AnnotatedAggregate<Book> bookAggregate = AnnotatedAggregate.initialize((Book) null,
+        AnnotatedAggregate<Book> bookAggregate = AnnotatedAggregate.initialize((Callable<Book>) () ->
+                                                                                       new Book(new CreateBookCommand("book1")),
                                                                                bookAggregateModel,
                                                                                mockEventBus);
         bookAggregate.handle(command(new CreateBookCommand("book1")));
@@ -73,6 +75,9 @@ public class ComplexAggregateStructureTest {
         @AggregateMember
         private List<Page> pages = new ArrayList<>();
         private int lastPage = -1;
+
+        public Book() {
+        }
 
         @CommandHandler
         public Book(CreateBookCommand cmd) {

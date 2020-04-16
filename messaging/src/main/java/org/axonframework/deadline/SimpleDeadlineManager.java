@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2018. Axon Framework
+ * Copyright (c) 2010-2020. Axon Framework
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,8 +21,14 @@ import org.axonframework.common.AxonThreadFactory;
 import org.axonframework.common.transaction.NoTransactionManager;
 import org.axonframework.common.transaction.TransactionManager;
 import org.axonframework.eventhandling.GenericEventMessage;
-import org.axonframework.messaging.*;
+import org.axonframework.lifecycle.Phase;
+import org.axonframework.lifecycle.ShutdownHandler;
+import org.axonframework.messaging.DefaultInterceptorChain;
 import org.axonframework.messaging.ExecutionException;
+import org.axonframework.messaging.InterceptorChain;
+import org.axonframework.messaging.ResultMessage;
+import org.axonframework.messaging.ScopeAwareProvider;
+import org.axonframework.messaging.ScopeDescriptor;
 import org.axonframework.messaging.unitofwork.DefaultUnitOfWork;
 import org.axonframework.messaging.unitofwork.UnitOfWork;
 import org.slf4j.Logger;
@@ -32,7 +38,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 import static java.lang.String.format;
 import static org.axonframework.common.BuilderUtils.assertNonNull;
@@ -92,41 +103,53 @@ public class SimpleDeadlineManager extends AbstractDeadlineManager {
     }
 
     @Override
-    public String schedule(Duration triggerDuration,
+    public String schedule(Instant triggerDateTime,
                            String deadlineName,
                            Object messageOrPayload,
                            ScopeDescriptor deadlineScope) {
         DeadlineMessage<?> deadlineMessage = asDeadlineMessage(deadlineName, messageOrPayload);
-        String deadlineId = deadlineMessage.getIdentifier();
-
+        String deadlineMessageId = deadlineMessage.getIdentifier();
+        DeadlineId deadlineId = new DeadlineId(deadlineName, deadlineScope, deadlineMessageId);
         runOnPrepareCommitOrNow(() -> {
             DeadlineMessage<?> interceptedDeadlineMessage = processDispatchInterceptors(deadlineMessage);
-            DeadlineTask deadlineTask = new DeadlineTask(deadlineName,
-                                                         deadlineScope,
-                                                         interceptedDeadlineMessage,
-                                                         deadlineId);
+            DeadlineTask deadlineTask = new DeadlineTask(deadlineId, interceptedDeadlineMessage);
+            Duration triggerDuration = Duration.between(Instant.now(), triggerDateTime);
             ScheduledFuture<?> scheduledFuture = scheduledExecutorService.schedule(
                     deadlineTask,
                     triggerDuration.toMillis(),
                     TimeUnit.MILLISECONDS
             );
-            scheduledTasks.put(new DeadlineId(deadlineName, deadlineId), scheduledFuture);
+            scheduledTasks.put(deadlineId, scheduledFuture);
         });
 
-        return deadlineId;
+        return deadlineMessageId;
     }
 
     @Override
     public void cancelSchedule(String deadlineName, String scheduleId) {
-        runOnPrepareCommitOrNow(() -> cancelSchedule(new DeadlineId(deadlineName, scheduleId)));
+        runOnPrepareCommitOrNow(
+                () -> scheduledTasks.keySet().stream()
+                                    .filter(scheduledTaskId -> scheduledTaskId.getDeadlineName().equals(deadlineName)
+                                            && scheduledTaskId.getDeadlineId().equals(scheduleId))
+                                    .forEach(this::cancelSchedule)
+        );
     }
 
     @Override
     public void cancelAll(String deadlineName) {
         runOnPrepareCommitOrNow(
-                () -> scheduledTasks.entrySet().stream()
-                                    .map(Map.Entry::getKey)
+                () -> scheduledTasks.keySet().stream()
                                     .filter(scheduledTaskId -> scheduledTaskId.getDeadlineName().equals(deadlineName))
+                                    .forEach(this::cancelSchedule)
+        );
+    }
+
+    @Override
+    public void cancelAllWithinScope(String deadlineName, ScopeDescriptor scope) {
+        runOnPrepareCommitOrNow(
+                () -> scheduledTasks.keySet().stream()
+                                    .filter(scheduledTaskId -> scheduledTaskId.getDeadlineName().equals(deadlineName)
+                                            && scheduledTaskId.getDeadlineScope().equals(scope))
                                     .forEach(this::cancelSchedule)
         );
     }
@@ -138,12 +161,25 @@ public class SimpleDeadlineManager extends AbstractDeadlineManager {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Will shutdown in the {@link Phase#INBOUND_EVENT_CONNECTORS} phase.
+     */
+    @Override
+    @ShutdownHandler(phase = Phase.INBOUND_EVENT_CONNECTORS)
+    public void shutdown() {
+        scheduledExecutorService.shutdown();
+    }
+
     private static class DeadlineId {
 
         private final String deadlineName;
+        private final ScopeDescriptor deadlineScope;
         private final String deadlineId;
 
-        private DeadlineId(String deadlineName, String deadlineId) {
+        private DeadlineId(String deadlineName, ScopeDescriptor deadlineScope, String deadlineId) {
+            this.deadlineScope = deadlineScope;
             this.deadlineId = deadlineId;
             this.deadlineName = deadlineName;
         }
@@ -152,13 +188,17 @@ public class SimpleDeadlineManager extends AbstractDeadlineManager {
             return deadlineName;
         }
 
+        public ScopeDescriptor getDeadlineScope() {
+            return deadlineScope;
+        }
+
         public String getDeadlineId() {
             return deadlineId;
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(deadlineName, deadlineId);
+            return Objects.hash(deadlineName, deadlineScope, deadlineId);
         }
 
         @Override
@@ -171,6 +211,7 @@ public class SimpleDeadlineManager extends AbstractDeadlineManager {
             }
             final DeadlineId other = (DeadlineId) obj;
             return Objects.equals(this.deadlineName, other.deadlineName)
+                    && Objects.equals(this.deadlineScope, other.deadlineScope)
                     && Objects.equals(this.deadlineId, other.deadlineId);
         }
 
@@ -178,6 +219,7 @@ public class SimpleDeadlineManager extends AbstractDeadlineManager {
         public String toString() {
             return "DeadlineId{" +
                     "deadlineName='" + deadlineName + '\'' +
+                    "deadlineScope=" + deadlineScope + '\'' +
                     ", deadlineId='" + deadlineId + '\'' +
                     '}';
         }
@@ -262,17 +304,11 @@ public class SimpleDeadlineManager extends AbstractDeadlineManager {
 
     private class DeadlineTask implements Runnable {
 
-        private final String deadlineName;
-        private final ScopeDescriptor deadlineScope;
+        private final DeadlineId deadlineId;
         private final DeadlineMessage<?> deadlineMessage;
-        private final String deadlineId;
 
-        private DeadlineTask(String deadlineName,
-                             ScopeDescriptor deadlineScope,
-                             DeadlineMessage<?> deadlineMessage,
-                             String deadlineId) {
-            this.deadlineName = deadlineName;
-            this.deadlineScope = deadlineScope;
+        private DeadlineTask(DeadlineId deadlineId,
+                             DeadlineMessage<?> deadlineMessage) {
             this.deadlineMessage = deadlineMessage;
             this.deadlineId = deadlineId;
         }
@@ -285,25 +321,30 @@ public class SimpleDeadlineManager extends AbstractDeadlineManager {
 
             try {
                 Instant triggerInstant = GenericEventMessage.clock.instant();
-                UnitOfWork<DeadlineMessage<?>> unitOfWork = new DefaultUnitOfWork<>(
-                        new GenericDeadlineMessage<>(deadlineName, deadlineMessage, () -> triggerInstant));
+                UnitOfWork<DeadlineMessage<?>> unitOfWork = new DefaultUnitOfWork<>(new GenericDeadlineMessage<>(
+                        deadlineId.getDeadlineName(),
+                        deadlineMessage,
+                        () -> triggerInstant));
                 unitOfWork.attachTransaction(transactionManager);
                 InterceptorChain chain =
                         new DefaultInterceptorChain<>(unitOfWork,
                                                       handlerInterceptors(),
                                                       deadlineMessage -> {
-                                                          executeScheduledDeadline(deadlineMessage, deadlineScope);
+                                                          executeScheduledDeadline(deadlineMessage,
+                                                                                   deadlineId.getDeadlineScope());
                                                           return null;
                                                       });
                 ResultMessage<?> resultMessage = unitOfWork.executeWithResult(chain::proceed);
                 if (resultMessage.isExceptional()) {
                     Throwable e = resultMessage.exceptionResult();
-                    throw new DeadlineException(format("An error occurred while triggering the deadline %s %s",
-                                                       deadlineName,
-                                                       deadlineId), e);
+                    logger.error("An error occurred while triggering the deadline [{}] with identifier [{}]",
+                                 deadlineId.getDeadlineName(), deadlineId.getDeadlineId(), e);
                 }
+            } catch (Exception e) {
+                logger.error("An error occurred while triggering the deadline [{}] with identifier [{}]",
+                             deadlineId.getDeadlineName(), deadlineId.getDeadlineId(), e);
             } finally {
-                scheduledTasks.remove(new DeadlineId(deadlineName, deadlineId));
+                scheduledTasks.remove(deadlineId);
             }
         }
 

@@ -17,7 +17,6 @@
 package org.axonframework.eventsourcing;
 
 import org.axonframework.common.stream.BlockingStream;
-import org.axonframework.eventhandling.GenericTrackedEventMessage;
 import org.axonframework.eventhandling.MultiSourceTrackingToken;
 import org.axonframework.eventhandling.TrackedEventMessage;
 import org.axonframework.eventhandling.TrackingToken;
@@ -86,7 +85,9 @@ public class MultiStreamableMessageSource implements StreamableMessageSource<Tra
      */
     @Override
     public MultiSourceBlockingStream openStream(TrackingToken trackingToken) {
-        if (trackingToken instanceof MultiSourceTrackingToken) {
+        if (trackingToken == null) {
+            return openStream(createTailToken());
+        } else if (trackingToken instanceof MultiSourceTrackingToken) {
             return new MultiSourceBlockingStream(eventStreams, (MultiSourceTrackingToken) trackingToken, trackedEventComparator);
         }
         throw new IllegalArgumentException("Incompatible token type provided.");
@@ -327,12 +328,17 @@ public class MultiStreamableMessageSource implements StreamableMessageSource<Tra
             this.messageStreams = new ArrayList<>();
             this.trackingToken = trackingToken;
             this.streamBySourceId = new HashMap<>();
-            messageSources.forEach(src -> {
-                SourceIdAwareBlockingStream stream = new SourceIdAwareBlockingStream(src.sourceId(),
-                                                                                     src.openStream(trackingToken.getTokenForStream(src.sourceId())));
-                this.messageStreams.add(stream);
-                this.streamBySourceId.put(src.sourceId(), stream);
-            });
+            try {
+                messageSources.forEach(src -> {
+                    SourceIdAwareBlockingStream stream = new SourceIdAwareBlockingStream(src.sourceId(),
+                                                                                         src.openStream(trackingToken.getTokenForStream(src.sourceId())));
+                    this.messageStreams.add(stream);
+                    this.streamBySourceId.put(src.sourceId(), stream);
+                });
+            } catch (Exception e) {
+                messageStreams.forEach(SourceIdAwareBlockingStream::close);
+                throw e;
+            }
         }
 
         /**
@@ -374,8 +380,8 @@ public class MultiStreamableMessageSource implements StreamableMessageSource<Tra
                 String streamId = e.getKey();
                 TrackedEventMessage<?> message = e.getValue();
                 try {
-                    return new GenericTrackedEventMessage<>(trackingToken.advancedTo(streamId, message.trackingToken()),
-                                                            messageSource(streamId).nextAvailable());
+                    MultiSourceTrackingToken advancedToken = this.trackingToken.advancedTo(streamId, message.trackingToken());
+                    return messageSource(streamId).nextAvailable().withTrackingToken(advancedToken);
                 } catch (InterruptedException ex) {
                     logger.warn("Thread Interrupted whilst consuming next message", ex);
                     Thread.currentThread().interrupt();
@@ -454,6 +460,7 @@ public class MultiStreamableMessageSource implements StreamableMessageSource<Tra
             if (peekedMessage != null) {
                 TrackedEventMessage next = peekedMessage;
                 peekedMessage = null;
+                trackingToken = (MultiSourceTrackingToken) next.trackingToken();
                 return next;
             }
 
@@ -479,7 +486,7 @@ public class MultiStreamableMessageSource implements StreamableMessageSource<Tra
             trackingToken = newTrackingToken;
 
             logger.debug("Message consumed from stream: {}", streamIdOfMessage);
-            return new GenericTrackedEventMessage<>(newTrackingToken, messageToReturn);
+            return messageToReturn.withTrackingToken(newTrackingToken);
         }
 
         private void peekForMessages(Map<String, TrackedEventMessage<?>> candidateMessagesToReturn) {

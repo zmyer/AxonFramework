@@ -20,6 +20,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import org.axonframework.messaging.ScopeDescriptor;
 
+import java.beans.ConstructorProperties;
 import java.io.IOException;
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -67,6 +68,7 @@ public class AggregateScopeDescriptor implements ScopeDescriptor {
      * @param identifier An {@link Object} denoting the identifier of the Aggregate
      */
     @JsonCreator
+    @ConstructorProperties({ "type", "identifier" })
     public AggregateScopeDescriptor(@JsonProperty("type") String type, @JsonProperty("identifier") Object identifier) {
         this.type = type;
         this.identifier = identifier;
@@ -109,7 +111,7 @@ public class AggregateScopeDescriptor implements ScopeDescriptor {
 
     @Override
     public int hashCode() {
-        return Objects.hash(type, identifierSupplier);
+        return Objects.hash(type, getIdentifier());
     }
 
     @Override
@@ -122,14 +124,14 @@ public class AggregateScopeDescriptor implements ScopeDescriptor {
         }
         final AggregateScopeDescriptor other = (AggregateScopeDescriptor) obj;
         return Objects.equals(this.type, other.type)
-                && Objects.equals(this.identifier, other.identifier);
+                && Objects.equals(this.getIdentifier(), other.getIdentifier());
     }
 
     @Override
     public String toString() {
         return "AggregateScopeDescriptor{" +
                 "type=" + type +
-                ", identifier='" + identifier + '\'' +
+                ", identifier='" + getIdentifier() + '\'' +
                 '}';
     }
 }

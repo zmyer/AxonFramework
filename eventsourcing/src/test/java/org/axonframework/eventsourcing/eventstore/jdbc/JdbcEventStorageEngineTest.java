@@ -25,6 +25,7 @@ import org.axonframework.eventhandling.GenericEventMessage;
 import org.axonframework.eventhandling.TrackedEventData;
 import org.axonframework.eventhandling.TrackedEventMessage;
 import org.axonframework.eventhandling.TrackingEventStream;
+import org.axonframework.eventhandling.TrackingToken;
 import org.axonframework.eventsourcing.eventstore.AbstractEventStorageEngine;
 import org.axonframework.eventsourcing.eventstore.BatchingEventStorageEngineTest;
 import org.axonframework.eventsourcing.eventstore.EmbeddedEventStore;
@@ -33,7 +34,7 @@ import org.axonframework.serialization.UnknownSerializedType;
 import org.axonframework.serialization.upcasting.event.EventUpcaster;
 import org.axonframework.serialization.upcasting.event.NoOpEventUpcaster;
 import org.hsqldb.jdbc.JDBCDataSource;
-import org.junit.*;
+import org.junit.jupiter.api.*;
 import org.springframework.test.annotation.DirtiesContext;
 
 import java.sql.Connection;
@@ -50,9 +51,8 @@ import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
 import static java.util.stream.Collectors.toList;
-import static junit.framework.TestCase.assertEquals;
 import static org.axonframework.eventsourcing.utils.EventStoreTestUtils.*;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author Rene de Waele
@@ -63,7 +63,7 @@ public class JdbcEventStorageEngineTest extends BatchingEventStorageEngineTest {
     private PersistenceExceptionResolver defaultPersistenceExceptionResolver;
     private JdbcEventStorageEngine testSubject;
 
-    @Before
+    @BeforeEach
     public void setUp() throws SQLException {
         dataSource = new JDBCDataSource();
         dataSource.setUrl("jdbc:hsqldb:mem:test");
@@ -87,7 +87,6 @@ public class JdbcEventStorageEngineTest extends BatchingEventStorageEngineTest {
     }
 
     @Test
-    @SuppressWarnings({"JpaQlInspection", "OptionalGetWithoutIsPresent"})
     @DirtiesContext
     public void testCustomSchemaConfig() {
         setTestSubject(testSubject = createEngine(NoOpEventUpcaster.INSTANCE, defaultPersistenceExceptionResolver,
@@ -124,7 +123,7 @@ public class JdbcEventStorageEngineTest extends BatchingEventStorageEngineTest {
             conn.prepareStatement("DELETE FROM DomainEventEntry WHERE sequenceNumber < 0").executeUpdate();
         }
 
-        testSubject.fetchTrackedEvents(null, 100).stream()
+        testSubject.fetchTrackedEvents((TrackingToken) null, 100).stream()
                    .map(i -> (GapAwareTrackingToken) i.trackingToken())
                    .forEach(i -> assertTrue(i.getGaps().size() <= 2));
     }

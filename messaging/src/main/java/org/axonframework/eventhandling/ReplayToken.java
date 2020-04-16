@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2019. Axon Framework
+ * Copyright (c) 2010-2020. Axon Framework
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import org.axonframework.messaging.Message;
 
+import java.beans.ConstructorProperties;
 import java.io.Serializable;
 import java.util.Objects;
 import java.util.Optional;
@@ -99,6 +100,18 @@ public class ReplayToken implements TrackingToken, WrappedToken, Serializable {
     }
 
     /**
+     * Return the relative position at which a reset was triggered for this Segment.
+     * In case a replay finished or no replay is active, an {@code OptionalLong.empty()} will be returned.
+     *
+     * @return the relative position at which a reset was triggered for this Segment
+     */
+    public static OptionalLong getTokenAtReset(TrackingToken trackingToken) {
+        return WrappedToken.unwrap(trackingToken, ReplayToken.class)
+                           .map(rt -> rt.getTokenAtReset().position())
+                .orElse(OptionalLong.empty());
+    }
+
+    /**
      * Initialize a ReplayToken, using the given {@code tokenAtReset} to represent the position at which a reset was
      * triggered. The current token is reset to the initial position.
      * <p>
@@ -118,6 +131,7 @@ public class ReplayToken implements TrackingToken, WrappedToken, Serializable {
      * @param newRedeliveryToken The current token
      */
     @JsonCreator
+    @ConstructorProperties({"tokenAtReset", "currentToken"})
     public ReplayToken(@JsonProperty("tokenAtReset") TrackingToken tokenAtReset,
                        @JsonProperty("currentToken") TrackingToken newRedeliveryToken) {
         this(tokenAtReset, newRedeliveryToken, true);
@@ -251,4 +265,5 @@ public class ReplayToken implements TrackingToken, WrappedToken, Serializable {
         }
         return OptionalLong.empty();
     }
+
 }

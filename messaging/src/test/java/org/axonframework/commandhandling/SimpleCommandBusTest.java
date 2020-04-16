@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2010-2018. Axon Framework
+ * Copyright (c) 2010-2019. Axon Framework
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,6 +16,7 @@
 
 package org.axonframework.commandhandling;
 
+import org.axonframework.commandhandling.callbacks.NoOpCallback;
 import org.axonframework.common.Registration;
 import org.axonframework.messaging.InterceptorChain;
 import org.axonframework.messaging.MessageHandler;
@@ -26,38 +27,41 @@ import org.axonframework.messaging.unitofwork.CurrentUnitOfWork;
 import org.axonframework.messaging.unitofwork.RollbackConfigurationType;
 import org.axonframework.messaging.unitofwork.UnitOfWork;
 import org.axonframework.monitoring.MessageMonitor;
-import org.junit.*;
-import org.mockito.*;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.axonframework.commandhandling.GenericCommandMessage.asCommandMessage;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 /**
  * @author Allard Buijze
  */
-public class SimpleCommandBusTest {
+class SimpleCommandBusTest {
 
     private SimpleCommandBus testSubject;
 
-    @Before
-    public void setUp() {
+    @BeforeEach
+    void setUp() {
         this.testSubject = SimpleCommandBus.builder().build();
     }
 
-    @After
-    public void tearDown() {
+    @AfterEach
+    void tearDown() {
         while (CurrentUnitOfWork.isStarted()) {
             CurrentUnitOfWork.get().rollback();
         }
     }
 
     @Test
-    public void testDispatchCommandHandlerSubscribed() {
+    void testDispatchCommandHandlerSubscribed() {
         testSubject.subscribe(String.class.getName(), new MyStringCommandHandler());
         testSubject.dispatch(asCommandMessage("Say hi!"),
                              (CommandCallback<String, CommandMessage<String>>) (command, commandResultMessage) -> {
@@ -71,8 +75,7 @@ public class SimpleCommandBusTest {
     }
 
     @Test
-    @SuppressWarnings("unchecked")
-    public void testDispatchCommandImplicitUnitOfWorkIsCommittedOnReturnValue() {
+    void testDispatchCommandImplicitUnitOfWorkIsCommittedOnReturnValue() {
         final AtomicReference<UnitOfWork<?>> unitOfWork = new AtomicReference<>();
         testSubject.subscribe(String.class.getName(), command -> {
             unitOfWork.set(CurrentUnitOfWork.get());
@@ -95,7 +98,21 @@ public class SimpleCommandBusTest {
     }
 
     @Test
-    public void testDispatchCommandImplicitUnitOfWorkIsRolledBackOnException() {
+    void testFireAndForgetUsesDefaultCallback() {
+        CommandCallback<Object, Object> mockCallback = mock(CommandCallback.class);
+        testSubject = SimpleCommandBus.builder()
+                                      .defaultCommandCallback(mockCallback).build();
+
+        CommandMessage<Object> command = asCommandMessage("test");
+        testSubject.dispatch(command, NoOpCallback.INSTANCE);
+        verify(mockCallback, never()).onResult(any(), any());
+
+        testSubject.dispatch(command);
+        verify(mockCallback).onResult(eq(command), any());
+    }
+
+    @Test
+    void testDispatchCommandImplicitUnitOfWorkIsRolledBackOnException() {
         final AtomicReference<UnitOfWork<?>> unitOfWork = new AtomicReference<>();
         testSubject.subscribe(String.class.getName(), command -> {
             unitOfWork.set(CurrentUnitOfWork.get());
@@ -116,8 +133,7 @@ public class SimpleCommandBusTest {
     }
 
     @Test
-    @SuppressWarnings("unchecked")
-    public void testDispatchCommandUnitOfWorkIsCommittedOnCheckedException() {
+    void testDispatchCommandUnitOfWorkIsCommittedOnCheckedException() {
         final AtomicReference<UnitOfWork<?>> unitOfWork = new AtomicReference<>();
         testSubject.subscribe(String.class.getName(), command -> {
             unitOfWork.set(CurrentUnitOfWork.get());
@@ -128,7 +144,7 @@ public class SimpleCommandBusTest {
         testSubject.dispatch(asCommandMessage("Say hi!"), (commandMessage, commandResultMessage) -> {
             if (commandResultMessage.isExceptional()) {
                 Throwable cause = commandResultMessage.exceptionResult();
-                assertEquals(cause.getClass(), Exception.class);
+                assertEquals(Exception.class, cause.getClass());
             } else {
                 fail("Expected exception");
             }
@@ -140,7 +156,7 @@ public class SimpleCommandBusTest {
 
     @SuppressWarnings("unchecked")
     @Test
-    public void testDispatchCommandNoHandlerSubscribed() {
+    void testDispatchCommandNoHandlerSubscribed() {
         CommandMessage<Object> command = asCommandMessage("test");
         CommandCallback callback = mock(CommandCallback.class);
         testSubject.dispatch(command, callback);
@@ -154,7 +170,7 @@ public class SimpleCommandBusTest {
 
     @SuppressWarnings("unchecked")
     @Test
-    public void testDispatchCommandHandlerUnsubscribed() {
+    void testDispatchCommandHandlerUnsubscribed() {
         MyStringCommandHandler commandHandler = new MyStringCommandHandler();
         Registration subscription = testSubject.subscribe(String.class.getName(), commandHandler);
         subscription.close();
@@ -171,7 +187,7 @@ public class SimpleCommandBusTest {
 
     @SuppressWarnings("unchecked")
     @Test
-    public void testDispatchCommandNoHandlerSubscribedCallsMonitorCallbackIgnored() throws InterruptedException {
+    void testDispatchCommandNoHandlerSubscribedCallsMonitorCallbackIgnored() throws InterruptedException {
         final CountDownLatch countDownLatch = new CountDownLatch(1);
         MessageMonitor<? super CommandMessage<?>> messageMonitor = (message) -> new MessageMonitor.MonitorCallback() {
             @Override
@@ -203,7 +219,7 @@ public class SimpleCommandBusTest {
 
     @SuppressWarnings({"unchecked"})
     @Test
-    public void testInterceptorChainCommandHandledSuccessfully() throws Exception {
+    void testInterceptorChainCommandHandledSuccessfully() throws Exception {
         MessageHandlerInterceptor<CommandMessage<?>> mockInterceptor1 = mock(MessageHandlerInterceptor.class);
         final MessageHandlerInterceptor<CommandMessage<?>> mockInterceptor2 = mock(MessageHandlerInterceptor.class);
         final MessageHandler<CommandMessage<?>> commandHandler = mock(MessageHandler.class);
@@ -238,7 +254,7 @@ public class SimpleCommandBusTest {
 
     @SuppressWarnings({"unchecked", "ThrowableInstanceNeverThrown"})
     @Test
-    public void testInterceptorChainCommandHandlerThrowsException() throws Exception {
+    void testInterceptorChainCommandHandlerThrowsException() throws Exception {
         MessageHandlerInterceptor<CommandMessage<?>> mockInterceptor1 = mock(MessageHandlerInterceptor.class);
         final MessageHandlerInterceptor<CommandMessage<?>> mockInterceptor2 = mock(MessageHandlerInterceptor.class);
         final MessageHandler<CommandMessage<?>> commandHandler = mock(MessageHandler.class);
@@ -276,7 +292,7 @@ public class SimpleCommandBusTest {
 
     @SuppressWarnings({"ThrowableInstanceNeverThrown", "unchecked"})
     @Test
-    public void testInterceptorChainInterceptorThrowsException() throws Exception {
+    void testInterceptorChainInterceptorThrowsException() throws Exception {
         MessageHandlerInterceptor<CommandMessage<?>> mockInterceptor1 =
                 mock(MessageHandlerInterceptor.class, "stubName");
         final MessageHandlerInterceptor<CommandMessage<?>> mockInterceptor2 = mock(MessageHandlerInterceptor.class);
@@ -307,7 +323,7 @@ public class SimpleCommandBusTest {
     }
 
     @Test
-    public void testCommandReplyMessageCorrelationData() {
+    void testCommandReplyMessageCorrelationData() {
         testSubject.subscribe(String.class.getName(), message -> message.getPayload().toString());
         testSubject.registerHandlerInterceptor(new CorrelationDataInterceptor<>(new MessageOriginProvider()));
         CommandMessage<String> command = asCommandMessage("Hi");
@@ -319,6 +335,30 @@ public class SimpleCommandBusTest {
             assertEquals(command.getIdentifier(), commandResultMessage.getMetaData().get("correlationId"));
             assertEquals(command.getPayload(), commandResultMessage.getPayload());
         });
+    }
+
+    @Test
+    void testDuplicateCommandHandlerResolverSetsTheExpectedHandler() {
+        DuplicateCommandHandlerResolver testDuplicateCommandHandlerResolver = DuplicateCommandHandlerResolution.silentOverride();
+        SimpleCommandBus testSubject =
+                SimpleCommandBus.builder()
+                                .duplicateCommandHandlerResolver(testDuplicateCommandHandlerResolver)
+                                .build();
+
+        MyStringCommandHandler initialHandler = spy(new MyStringCommandHandler());
+        MyStringCommandHandler duplicateHandler = spy(new MyStringCommandHandler());
+        CommandMessage<Object> testMessage = asCommandMessage("Say hi!");
+
+        // Subscribe the initial handler
+        testSubject.subscribe(String.class.getName(), initialHandler);
+        // Then, subscribe a duplicate
+        testSubject.subscribe(String.class.getName(), duplicateHandler);
+
+        // And after dispatching a test command, it should be handled by the initial handler
+        testSubject.dispatch(testMessage);
+
+        verify(duplicateHandler).handle(testMessage);
+        verify(initialHandler, never()).handle(testMessage);
     }
 
     private static class MyStringCommandHandler implements MessageHandler<CommandMessage<?>> {

@@ -19,6 +19,7 @@ package org.axonframework.messaging.annotation;
 import org.axonframework.messaging.Message;
 
 import java.lang.annotation.Annotation;
+import java.lang.reflect.Member;
 import java.util.Map;
 import java.util.Optional;
 
@@ -26,6 +27,8 @@ import java.util.Optional;
  * Interface describing a handler for specific messages targeting entities of a specific type.
  *
  * @param <T> The type of entity to which the message handler will delegate the actual handling of the message
+ * @author Allard Buijze
+ * @since 3.0
  */
 public interface MessageHandlingMember<T> {
 
@@ -42,12 +45,14 @@ public interface MessageHandlingMember<T> {
      * <p>
      * In general, a handler with a higher priority will receive the message before (or instead of) handlers with a
      * lower priority. However, the priority value may not be the only indicator that is used to determine the order of
-     * invocation. For instance, a message processor may decide to ignore the priority value if one message handler is
-     * a more specific handler of the message than another handler.
+     * invocation. For instance, a message processor may decide to ignore the priority value if one message handler is a
+     * more specific handler of the message than another handler.
      *
      * @return Number indicating the priority of this handler over other handlers
      */
-    int priority();
+    default int priority() {
+        return 0;
+    }
 
     /**
      * Checks if this handler is capable of handling the given {@code message}.
@@ -56,6 +61,16 @@ public interface MessageHandlingMember<T> {
      * @return {@code true} if the handler is capable of handling the message, {@code false} otherwise
      */
     boolean canHandle(Message<?> message);
+
+    /**
+     * Checks if this handler is capable of handling messages with the given {@code payloadType}.
+     *
+     * @param payloadType The payloadType of a message that is to be handled
+     * @return {@code true} if the handler is capable of handling the message with given type, {@code false} otherwise
+     */
+    default boolean canHandleType(Class<?> payloadType) {
+        return true;
+    }
 
     /**
      * Handles the given {@code message} by invoking the appropriate method on given {@code target}. This may result in
@@ -81,6 +96,19 @@ public interface MessageHandlingMember<T> {
      * of the given handlerType
      */
     <HT> Optional<HT> unwrap(Class<HT> handlerType);
+
+    /**
+     * Gets the declaring class of this Message Handling Member.
+     *
+     * @return the declaring class of this Message Handling Member
+     */
+    default Class<?> declaringClass() {
+        return unwrap(Member.class).map(Member::getDeclaringClass)
+                                   .orElseThrow(() -> new UnsupportedOperationException(
+                                           "This implementation of MessageHandlingMember does not wrap a "
+                                                   + "java.lang.reflect.Member. Please provide a different way of "
+                                                   + "getting 'declaringClass' of this MessageHandlingMember."));
+    }
 
     /**
      * Checks whether the method of the target entity contains the given {@code annotationType}.

@@ -19,36 +19,37 @@ package org.axonframework.commandhandling.callbacks;
 import org.axonframework.commandhandling.CommandMessage;
 import org.axonframework.commandhandling.CommandResultMessage;
 import org.axonframework.commandhandling.GenericCommandMessage;
+import org.axonframework.messaging.ResultMessage;
 import org.axonframework.utils.MockException;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 import static org.axonframework.commandhandling.GenericCommandResultMessage.asCommandResultMessage;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author Allard Buijze
  */
-public class FutureCallbackTest {
+class FutureCallbackTest {
 
     private static final CommandMessage<Object> COMMAND_MESSAGE = GenericCommandMessage.asCommandMessage("Test");
     private static final CommandResultMessage<String> COMMAND_RESPONSE_MESSAGE =
             asCommandResultMessage("Hello world");
+    private static final int THREAD_JOIN_TIMEOUT = 1000;
     private volatile FutureCallback<Object, Object> testSubject;
     private volatile Object resultFromParallelThread;
-    private static final int THREAD_JOIN_TIMEOUT = 1000;
 
-    @Before
-    public void setUp() {
+    @BeforeEach
+    void setUp() {
         testSubject = new FutureCallback<>();
     }
 
     @Test
-    public void testOnSuccess() throws InterruptedException {
+    void testOnSuccess() throws InterruptedException {
         Thread t = new Thread(() -> {
             try {
                 resultFromParallelThread = testSubject.get();
@@ -65,7 +66,7 @@ public class FutureCallbackTest {
 
     @SuppressWarnings({"ThrowableInstanceNeverThrown"})
     @Test
-    public void testOnFailure() throws InterruptedException {
+    void testOnFailure() throws InterruptedException {
         Thread t = new Thread(() -> {
             try {
                 resultFromParallelThread = testSubject.get();
@@ -78,12 +79,12 @@ public class FutureCallbackTest {
         RuntimeException exception = new MockException();
         testSubject.onResult(COMMAND_MESSAGE, asCommandResultMessage(exception));
         t.join(THREAD_JOIN_TIMEOUT);
-        assertTrue(resultFromParallelThread instanceof ExecutionException);
-        assertEquals(exception, ((Exception) resultFromParallelThread).getCause());
+        assertTrue(resultFromParallelThread instanceof CommandResultMessage);
+        assertEquals(exception, ((CommandResultMessage) resultFromParallelThread).exceptionResult());
     }
 
     @Test
-    public void testOnSuccessForLimitedTime_Timeout() throws InterruptedException {
+    void testOnSuccessForLimitedTime_Timeout() throws InterruptedException {
         Thread t = new Thread(() -> {
             try {
                 resultFromParallelThread = testSubject.get(1, TimeUnit.NANOSECONDS);
@@ -98,7 +99,46 @@ public class FutureCallbackTest {
     }
 
     @Test
-    public void testOnSuccessForLimitedTime_InTime() throws InterruptedException {
+    void testOnResultReturnsMessageWithTimeoutExceptionOnTimeout() throws InterruptedException {
+        Thread t = new Thread(() -> {
+            resultFromParallelThread = testSubject.getResult(1, TimeUnit.NANOSECONDS);
+        });
+        t.start();
+        t.join(1000);
+        testSubject.onResult(COMMAND_MESSAGE, COMMAND_RESPONSE_MESSAGE);
+        assertTrue(resultFromParallelThread instanceof ResultMessage);
+        assertTrue(((ResultMessage) resultFromParallelThread).exceptionResult() instanceof TimeoutException);
+    }
+
+    @Test
+    void testOnResultUnwrapsExecutionResult() throws InterruptedException {
+        Thread t = new Thread(() -> {
+            resultFromParallelThread = testSubject.getResult();
+        });
+        t.start();
+        testSubject.completeExceptionally(new MockException("Mocking an exception"));
+        t.join();
+        assertTrue(resultFromParallelThread instanceof ResultMessage);
+        assertTrue(((ResultMessage) resultFromParallelThread).exceptionResult() instanceof MockException);
+    }
+
+    @Test
+    void testGetThrowsExecutionException() throws InterruptedException {
+        Thread t = new Thread(() -> {
+            try {
+                testSubject.get();
+            } catch (Exception e) {
+                resultFromParallelThread = e;
+            }
+        });
+        t.start();
+        testSubject.completeExceptionally(new MockException("Mocking an exception"));
+        t.join();
+        assertTrue(resultFromParallelThread instanceof ExecutionException);
+    }
+
+    @Test
+    void testOnSuccessForLimitedTime_InTime() throws InterruptedException {
         Thread t = new Thread(() -> {
             try {
                 resultFromParallelThread = testSubject.get(10, TimeUnit.SECONDS);

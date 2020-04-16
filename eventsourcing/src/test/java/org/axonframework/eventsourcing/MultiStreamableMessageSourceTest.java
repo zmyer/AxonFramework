@@ -1,11 +1,35 @@
+/*
+ * Copyright (c) 2010-2019. Axon Framework
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package org.axonframework.eventsourcing;
 
 import org.axonframework.common.stream.BlockingStream;
-import org.axonframework.eventhandling.*;
+import org.axonframework.eventhandling.DomainEventMessage;
+import org.axonframework.eventhandling.EventMessage;
+import org.axonframework.eventhandling.GenericDomainEventMessage;
+import org.axonframework.eventhandling.GenericEventMessage;
+import org.axonframework.eventhandling.GlobalSequenceTrackingToken;
+import org.axonframework.eventhandling.MultiSourceTrackingToken;
+import org.axonframework.eventhandling.TrackedEventMessage;
 import org.axonframework.eventsourcing.eventstore.EmbeddedEventStore;
 import org.axonframework.eventsourcing.eventstore.inmemory.InMemoryEventStorageEngine;
-import org.junit.Before;
-import org.junit.Test;
+import org.axonframework.eventsourcing.utils.MockException;
+import org.axonframework.messaging.StreamableMessageSource;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -14,17 +38,26 @@ import java.util.Comparator;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
-public class MultiStreamableMessageSourceTest {
+class MultiStreamableMessageSourceTest {
 
     private MultiStreamableMessageSource testSubject;
 
     private EmbeddedEventStore eventStoreA;
     private EmbeddedEventStore eventStoreB;
 
-    @Before
-    public void setUp() {
+    @BeforeEach
+    void setUp() {
         eventStoreA = EmbeddedEventStore.builder().storageEngine(new InMemoryEventStorageEngine()).build();
         eventStoreB = EmbeddedEventStore.builder().storageEngine(new InMemoryEventStorageEngine()).build();
 
@@ -36,13 +69,12 @@ public class MultiStreamableMessageSourceTest {
     }
 
     @Test
-    public void simplePublishAndConsume() throws InterruptedException {
+    void simplePublishAndConsume() throws InterruptedException {
         EventMessage publishedEvent = GenericEventMessage.asEventMessage("Event1");
 
         eventStoreA.publish(publishedEvent);
 
-        BlockingStream<TrackedEventMessage<?>> singleEventStream = testSubject.openStream(testSubject
-                                                                                                  .createTokenAt(Instant.now()));
+        BlockingStream<TrackedEventMessage<?>> singleEventStream = testSubject.openStream(testSubject.createTailToken());
 
         assertTrue(singleEventStream.hasNextAvailable());
         assertEquals(publishedEvent.getPayload(), singleEventStream.nextAvailable().getPayload());
@@ -50,27 +82,76 @@ public class MultiStreamableMessageSourceTest {
         singleEventStream.close();
     }
 
-    @Test(expected = IllegalArgumentException.class)
-    public void openStreamWithWrongToken() throws InterruptedException {
-        testSubject.openStream(new GlobalSequenceTrackingToken(0L));
+    @Test
+    void testConnectionsAreClosedWhenOpeningFails() {
+        StreamableMessageSource<TrackedEventMessage<?>> source1 = mock(StreamableMessageSource.class);
+        StreamableMessageSource<TrackedEventMessage<?>> source2 = mock(StreamableMessageSource.class);
+        testSubject = MultiStreamableMessageSource.builder()
+                                                  .addMessageSource("source1", source1)
+                                                  .addMessageSource("source2", source2)
+                                                  .build();
+        BlockingStream<TrackedEventMessage<?>> mockStream = mock(BlockingStream.class);
+        when(source1.openStream(any())).thenReturn(mockStream);
+        when(source2.openStream(any())).thenThrow(new MockException());
+
+        assertThrows(MockException.class, () ->
+                testSubject.openStream(null));
+
+        verify(mockStream).close();
+        verify(source1).openStream(null);
+        verify(source2).openStream(null);
     }
 
     @Test
-    public void longPoll() throws InterruptedException {
-        BlockingStream<TrackedEventMessage<?>> singleEventStream = testSubject.openStream(testSubject
-                                                                                                  .createTokenAt(Instant.now()));
+    void simplePublishAndConsumeDomainEventMessage() throws InterruptedException {
+        EventMessage<?> publishedEvent = new GenericDomainEventMessage<>("Aggregate", "id", 0, "Event1");
 
-        long beforePollTime = System.currentTimeMillis();
-        assertFalse(singleEventStream.hasNextAvailable(100, TimeUnit.MILLISECONDS));
-        long afterPollTime = System.currentTimeMillis();
-        assertTrue(afterPollTime - beforePollTime > 90);
-        assertTrue(afterPollTime - beforePollTime < 105);
+        eventStoreA.publish(publishedEvent);
+        BlockingStream<TrackedEventMessage<?>> singleEventStream = testSubject.openStream(testSubject.createTailToken());
+
+        assertTrue(singleEventStream.hasNextAvailable());
+        TrackedEventMessage<?> actual = singleEventStream.nextAvailable();
+
+        assertEquals(publishedEvent.getPayload(), actual.getPayload());
+        assertTrue(actual instanceof DomainEventMessage);
 
         singleEventStream.close();
     }
 
     @Test
-    public void longPollMessageImmediatelyAvailable() throws InterruptedException {
+    void openStreamWithWrongToken() {
+        assertThrows(IllegalArgumentException.class, () -> testSubject.openStream(new GlobalSequenceTrackingToken(0L)));
+    }
+
+    @Test
+    void openStreamWithNullTokenReturnsFirstEvent() throws InterruptedException {
+        EventMessage<Object> message = GenericEventMessage.asEventMessage("Event1");
+        eventStoreA.publish(message);
+
+        BlockingStream<TrackedEventMessage<?>> actual = testSubject.openStream(null);
+        assertNotNull(actual);
+        TrackedEventMessage<?> trackedEventMessage = actual.nextAvailable();
+        assertEquals(message.getIdentifier(), trackedEventMessage.getIdentifier());
+        assertEquals(message.getPayload(), trackedEventMessage.getPayload());
+    }
+
+    @Test
+    void longPoll() throws InterruptedException {
+        BlockingStream<TrackedEventMessage<?>> singleEventStream = testSubject.openStream(testSubject
+                                                                                                  .createTokenAt(Instant.now()));
+
+        long beforePollTime = System.currentTimeMillis();
+        assertFalse(singleEventStream.hasNextAvailable(100, TimeUnit.MILLISECONDS));
+        long pollTime = System.currentTimeMillis() - beforePollTime;
+        // allow for some deviation in polling time
+        assertTrue(pollTime > 80, "Poll time too short: " + pollTime + "ms");
+        assertTrue(pollTime < 120, "Poll time too long: " + pollTime + "ms");
+
+        singleEventStream.close();
+    }
+
+    @Test
+    void longPollMessageImmediatelyAvailable() throws InterruptedException {
         BlockingStream<TrackedEventMessage<?>> singleEventStream = testSubject.openStream(testSubject
                                                                                                   .createTokenAt(Instant.now()));
 
@@ -87,7 +168,7 @@ public class MultiStreamableMessageSourceTest {
     }
 
     @Test
-    public void multiPublishAndConsume() throws InterruptedException {
+    void multiPublishAndConsume() throws InterruptedException {
         EventMessage pubToStreamA = GenericEventMessage.asEventMessage("Event1");
         eventStoreA.publish(pubToStreamA);
 
@@ -110,7 +191,7 @@ public class MultiStreamableMessageSourceTest {
     }
 
     @Test
-    public void peek() throws InterruptedException {
+    void peek() throws InterruptedException {
         EventMessage publishedEvent = GenericEventMessage.asEventMessage("Event1");
 
         eventStoreA.publish(publishedEvent);
@@ -128,7 +209,7 @@ public class MultiStreamableMessageSourceTest {
     }
 
     @Test
-    public void peekWithMultipleStreams() throws InterruptedException {
+    void peekWithMultipleStreams() throws InterruptedException {
         EventMessage pubToStreamA = GenericEventMessage.asEventMessage("Event1");
         eventStoreA.publish(pubToStreamA);
 
@@ -142,6 +223,7 @@ public class MultiStreamableMessageSourceTest {
 
         assertTrue(singleEventStream.peek().isPresent());
         TrackedEventMessage peekedMessageA = singleEventStream.peek().get();
+        MultiSourceTrackingToken tokenA = (MultiSourceTrackingToken) peekedMessageA.trackingToken();
         assertEquals(pubToStreamA.getPayload(), peekedMessageA.getPayload());
 
         //message is still consumable and consumed message equal to peeked
@@ -150,15 +232,19 @@ public class MultiStreamableMessageSourceTest {
         //peek and consume another
         assertTrue(singleEventStream.peek().isPresent());
         TrackedEventMessage peekedMessageB = singleEventStream.peek().get();
+        MultiSourceTrackingToken tokenB = (MultiSourceTrackingToken) peekedMessageB.trackingToken();
         assertEquals(pubToStreamB.getPayload(), peekedMessageB.getPayload());
 
         assertEquals(peekedMessageB.getPayload(), singleEventStream.nextAvailable().getPayload());
+
+        //consuming from second stream doesn't alter token from first stream
+        assertEquals(tokenA.getTokenForStream("eventStoreA"), tokenB.getTokenForStream("eventStoreA"));
 
         singleEventStream.close();
     }
 
     @Test
-    public void createTailToken() {
+    void createTailToken() {
         EventMessage pubToStreamA = GenericEventMessage.asEventMessage("Event1");
         eventStoreA.publish(pubToStreamA);
 
@@ -172,7 +258,7 @@ public class MultiStreamableMessageSourceTest {
     }
 
     @Test
-    public void createHeadToken() {
+    void createHeadToken() {
         EventMessage pubToStreamA = GenericEventMessage.asEventMessage("Event1");
         eventStoreA.publish(pubToStreamA);
 
@@ -187,7 +273,7 @@ public class MultiStreamableMessageSourceTest {
     }
 
     @Test
-    public void createTokenAt() throws InterruptedException {
+    void createTokenAt() throws InterruptedException {
         EventMessage pubToStreamA = GenericEventMessage.asEventMessage("Event1");
         eventStoreA.publish(pubToStreamA);
         eventStoreA.publish(pubToStreamA);
@@ -204,7 +290,7 @@ public class MultiStreamableMessageSourceTest {
     }
 
     @Test
-    public void createTokenSince() throws InterruptedException {
+    void createTokenSince() throws InterruptedException {
         EventMessage pubToStreamA = GenericEventMessage.asEventMessage("Event1");
         eventStoreA.publish(pubToStreamA);
         eventStoreA.publish(pubToStreamA);
@@ -221,7 +307,7 @@ public class MultiStreamableMessageSourceTest {
     }
 
     @Test
-    public void configuredDifferentComparator() throws InterruptedException {
+    void configuredDifferentComparator() throws InterruptedException {
         Comparator<Map.Entry<String, TrackedEventMessage<?>>> eventStoreAPriority =
                 Comparator.comparing((Map.Entry<String, TrackedEventMessage<?>> e) -> !e.getKey().equals("eventStoreA")).
                         thenComparing(e -> e.getValue().getTimestamp());
